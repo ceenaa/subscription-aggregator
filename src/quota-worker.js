@@ -101,23 +101,29 @@ function clientLooksEnabled(entry) {
   return isEnabledValue(entry.client.enable);
 }
 
-function normalizedCombinedUsage(first, second) {
-  if (first.total <= 0 || second.total <= 0) {
+function formatPanelList(names) {
+  if (names.length <= 1) return names[0] || '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+function normalizedCombinedUsage(entries) {
+  if (entries.some((entry) => entry.total <= 0)) {
     return {
       total: 0,
       used: 0,
-      scale: 0
+      scale: 0,
+      scales: []
     };
   }
 
-  const lower = first.total <= second.total ? first : second;
-  const higher = lower === first ? second : first;
-  const scale = higher.total / lower.total;
+  const lower = entries.reduce((lowest, entry) => (entry.total < lowest.total ? entry : lowest), entries[0]);
+  const scales = entries.map((entry) => entry.total / lower.total);
 
   return {
     total: lower.total,
-    used: lower.allTime + higher.allTime / scale,
-    scale
+    used: entries.reduce((sum, entry, index) => sum + entry.allTime / scales[index], 0),
+    scale: Math.max(...scales),
+    scales
   };
 }
 
@@ -210,18 +216,16 @@ export function indexInboundClients(panel, inbound) {
   return clients;
 }
 
-export function evaluateQuotaPair(first, second) {
+export function evaluateQuotaGroup(entries) {
   const reasons = [];
 
-  if (first.total > 0 && first.allTime >= first.total) {
-    reasons.push(`${first.panel.name} quota exceeded`);
+  for (const entry of entries) {
+    if (entry.total > 0 && entry.allTime >= entry.total) {
+      reasons.push(`${entry.panel.name} quota exceeded`);
+    }
   }
 
-  if (second.total > 0 && second.allTime >= second.total) {
-    reasons.push(`${second.panel.name} quota exceeded`);
-  }
-
-  const combined = normalizedCombinedUsage(first, second);
+  const combined = normalizedCombinedUsage(entries);
 
   if (combined.total > 0 && combined.used >= combined.total) {
     reasons.push('combined normalized quota exceeded');
@@ -232,8 +236,13 @@ export function evaluateQuotaPair(first, second) {
     reasons,
     combinedTotal: combined.total,
     combinedAllTime: combined.used,
-    combinedScale: combined.scale
+    combinedScale: combined.scale,
+    combinedScales: combined.scales
   };
+}
+
+export function evaluateQuotaPair(first, second) {
+  return evaluateQuotaGroup([first, second]);
 }
 
 async function requestPanelJson(runtime, panel, request) {
@@ -278,14 +287,14 @@ async function disableClient(runtime, entry) {
   };
 }
 
-async function processQuotaPair(runtime, pair, options) {
-  const { firstClient, secondClient } = pair;
+async function processQuotaGroup(runtime, group, options) {
+  const { entries } = group;
   const dryRun = options.dryRun === true;
   const skipped = [];
-  const evaluation = evaluateQuotaPair(firstClient, secondClient);
+  const evaluation = evaluateQuotaGroup(entries);
   if (!evaluation.exceeded) return { disabled: null, partialDisabled: null, skipped };
 
-  const targets = [firstClient, secondClient].filter(clientLooksEnabled);
+  const targets = entries.filter(clientLooksEnabled);
   const updates = await Promise.all(
     targets.map(async (target) => {
       if (!updateClientId(target.client, target.stat)) {
@@ -338,8 +347,8 @@ async function processQuotaPair(runtime, pair, options) {
   }
 
   const updateResult = {
-    subId: firstClient.subId,
-    email: firstClient.email || secondClient.email,
+    subId: group.subId,
+    email: entries.find((entry) => entry.email)?.email || '',
     reasons: evaluation.reasons,
     panels: panelUpdates
   };
@@ -360,30 +369,27 @@ async function processQuotaPair(runtime, pair, options) {
 export async function enforcePanelQuota(runtime, panels, options = {}) {
   const logger = options.logger || console;
   const concurrency = options.concurrency || 5;
-  const [firstPanel, secondPanel] = panels;
-  if (!firstPanel || !secondPanel) {
-    throw new Error('Two panels must be configured before running the quota worker');
+  const configuredPanels = panels.filter(Boolean);
+  if (configuredPanels.length < 2) {
+    throw new Error('At least two panels must be configured before running the quota worker');
   }
 
-  const [first, second] = await Promise.all([
-    fetchPanelInbound(runtime, firstPanel),
-    fetchPanelInbound(runtime, secondPanel)
-  ]);
+  const panelStates = await Promise.all(configuredPanels.map((panel) => fetchPanelInbound(runtime, panel)));
 
   const disabled = [];
   const partialDisabled = [];
   const skipped = [];
 
-  if (!first.inbound || !second.inbound) {
+  const missingInboundPanels = panelStates.filter((state) => !state.inbound).map((state) => state.panel.name);
+  if (missingInboundPanels.length > 0) {
     const result = {
       checked: 0,
       disabled,
       partialDisabled,
       skipped: [
         {
-          reason: 'configured inbound is missing from one or both panels',
-          firstInboundFound: Boolean(first.inbound),
-          secondInboundFound: Boolean(second.inbound)
+          reason: 'configured inbound is missing from one or more panels',
+          missingPanels: missingInboundPanels
         }
       ]
     };
@@ -394,34 +400,54 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
     return result;
   }
 
-  const pairs = [];
-  for (const [subId, firstClient] of first.clients) {
-    const secondClient = second.clients.get(subId);
-    if (!secondClient) {
-      skipped.push({ subId, email: firstClient.email, reason: 'client missing from second panel' });
-      continue;
-    }
-
-    if (!firstClient.stat || !secondClient.stat) {
-      skipped.push({ subId, email: firstClient.email || secondClient.email, reason: 'client stats missing' });
-      continue;
-    }
-
-    if (!clientLooksEnabled(firstClient) && !clientLooksEnabled(secondClient)) {
-      skipped.push({ subId, email: firstClient.email || secondClient.email, reason: 'already disabled' });
-      continue;
-    }
-
-    pairs.push({ firstClient, secondClient });
-  }
-
-  for (const [subId, secondClient] of second.clients) {
-    if (!first.clients.has(subId)) {
-      skipped.push({ subId, email: secondClient.email, reason: 'client missing from first panel' });
+  const allSubIds = new Set();
+  for (const state of panelStates) {
+    for (const subId of state.clients.keys()) {
+      allSubIds.add(subId);
     }
   }
 
-  const results = await mapLimit(pairs, concurrency, (pair) => processQuotaPair(runtime, pair, options));
+  const groups = [];
+  for (const subId of allSubIds) {
+    const entries = panelStates.map((state) => state.clients.get(subId) || null);
+    const presentEntries = entries.filter(Boolean);
+    const email = presentEntries.find((entry) => entry.email)?.email || '';
+    const missingPanels = panelStates
+      .filter((state, index) => !entries[index])
+      .map((state) => state.panel.name);
+
+    if (missingPanels.length > 0) {
+      skipped.push({
+        subId,
+        email,
+        reason: `client missing from ${formatPanelList(missingPanels)}`,
+        missingPanels
+      });
+      continue;
+    }
+
+    const missingStatsPanels = presentEntries
+      .filter((entry) => !entry.stat)
+      .map((entry) => entry.panel.name);
+    if (missingStatsPanels.length > 0) {
+      skipped.push({
+        subId,
+        email,
+        reason: 'client stats missing',
+        missingStatsPanels
+      });
+      continue;
+    }
+
+    if (presentEntries.every((entry) => !clientLooksEnabled(entry))) {
+      skipped.push({ subId, email, reason: 'already disabled' });
+      continue;
+    }
+
+    groups.push({ subId, entries: presentEntries });
+  }
+
+  const results = await mapLimit(groups, concurrency, (group) => processQuotaGroup(runtime, group, options));
   for (const result of results) {
     if (result.disabled) disabled.push(result.disabled);
     if (result.partialDisabled) partialDisabled.push(result.partialDisabled);
@@ -429,7 +455,7 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
   }
 
   const result = {
-    checked: pairs.length,
+    checked: groups.length,
     disabled,
     partialDisabled,
     skipped

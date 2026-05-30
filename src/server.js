@@ -188,7 +188,7 @@ export async function createServer(config = loadConfig()) {
             renderInboundsPage({
               values: defaultInboundFormValues(),
               error:
-                'Panel configuration is incomplete. Set FIRST_PANEL_ADD_CLIENT_URL, FIRST_PANEL_INBOUND_ID, SECOND_PANEL_ADD_CLIENT_URL, and SECOND_PANEL_INBOUND_ID in .env.'
+                'Panel configuration is incomplete. Set ADD_CLIENT_URL and INBOUND_ID for every configured panel in .env.'
             })
           );
           return;

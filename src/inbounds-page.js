@@ -95,7 +95,7 @@ function subscriptionResult(subscription) {
     <section class="subscription-result">
       <div>
         <h2>Aggregated Subscription</h2>
-        <p>Use this link for the client created on both panels.</p>
+        <p>Use this link for the client created on every configured panel.</p>
       </div>
       <div class="subscription-layout">
         <div class="qr-box">${renderQrSvg(subscription.url)}</div>
@@ -448,7 +448,7 @@ export function renderInboundsPage({
   <main>
     <header>
       <h1>Create Inbound Clients</h1>
-      <p>Add the same client to both configured 3x-ui panels. The first panel can be routed through Xray and the second can be direct.</p>
+      <p>Add the same client to every configured 3x-ui panel. Each panel can use its own direct or Xray route.</p>
     </header>
 
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}

@@ -59,8 +59,38 @@ function readCsvEnv(env, name) {
     .filter(Boolean);
 }
 
+function hasPanelConfig(env, prefix) {
+  return [
+    'NAME',
+    'ADD_CLIENT_URL',
+    'COOKIE',
+    'INBOUND_ID',
+    'PROXY',
+    'TOTAL_GB_RATIO'
+  ].some((field) => env[`${prefix}_PANEL_${field}`] !== undefined);
+}
+
+function readPanelConfig(env, prefix, defaults) {
+  return {
+    name: env[`${prefix}_PANEL_NAME`] || defaults.name,
+    addClientUrl: env[`${prefix}_PANEL_ADD_CLIENT_URL`] || '',
+    cookie: env[`${prefix}_PANEL_COOKIE`] || '',
+    inboundId: env[`${prefix}_PANEL_INBOUND_ID`] || '',
+    proxy: env[`${prefix}_PANEL_PROXY`] || defaults.proxy,
+    totalGbRatio: readOptionalNumberEnv(env, `${prefix}_PANEL_TOTAL_GB_RATIO`, 1)
+  };
+}
+
 export function loadConfig(env = process.env) {
   const httpsEnabled = readBooleanEnv(env, 'HTTPS_ENABLED', false);
+  const panels = [
+    readPanelConfig(env, 'FIRST', { name: 'first', proxy: 'xray' }),
+    readPanelConfig(env, 'SECOND', { name: 'second', proxy: 'direct' })
+  ];
+
+  if (hasPanelConfig(env, 'THIRD')) {
+    panels.push(readPanelConfig(env, 'THIRD', { name: 'third', proxy: 'direct' }));
+  }
 
   return {
     port: readIntegerEnv(env, 'PORT'),
@@ -100,23 +130,6 @@ export function loadConfig(env = process.env) {
         proxy: env.SECOND_SUBSCRIPTION_PROXY || 'direct'
       }
     ],
-    panels: [
-      {
-        name: env.FIRST_PANEL_NAME || 'first',
-        addClientUrl: env.FIRST_PANEL_ADD_CLIENT_URL || '',
-        cookie: env.FIRST_PANEL_COOKIE || '',
-        inboundId: env.FIRST_PANEL_INBOUND_ID || '',
-        proxy: env.FIRST_PANEL_PROXY || 'xray',
-        totalGbRatio: readOptionalNumberEnv(env, 'FIRST_PANEL_TOTAL_GB_RATIO', 1)
-      },
-      {
-        name: env.SECOND_PANEL_NAME || 'second',
-        addClientUrl: env.SECOND_PANEL_ADD_CLIENT_URL || '',
-        cookie: env.SECOND_PANEL_COOKIE || '',
-        inboundId: env.SECOND_PANEL_INBOUND_ID || '',
-        proxy: env.SECOND_PANEL_PROXY || 'direct',
-        totalGbRatio: readOptionalNumberEnv(env, 'SECOND_PANEL_TOTAL_GB_RATIO', 1)
-      }
-    ]
+    panels
   };
 }

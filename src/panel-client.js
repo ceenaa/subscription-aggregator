@@ -54,6 +54,50 @@ function parseEnabled(value) {
   return value !== 'false';
 }
 
+function panelEmailUniquenessKey(panel) {
+  if (!panel.addClientUrl) return '';
+
+  try {
+    const url = new URL(panel.addClientUrl);
+    const basePath = url.pathname.replace(/\/api\/inbounds\/addClient\/?$/, '');
+    return `${url.origin}${basePath || url.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function addDuplicatePanelEmailSuffixes(panels, input) {
+  const indexesByPanel = new Map();
+
+  panels.forEach((panel, index) => {
+    const key = panelEmailUniquenessKey(panel);
+    if (!key) return;
+
+    const indexes = indexesByPanel.get(key) || [];
+    indexes.push(index);
+    indexesByPanel.set(key, indexes);
+  });
+
+  const suffixByIndex = new Map();
+  for (const indexes of indexesByPanel.values()) {
+    if (indexes.length < 2) continue;
+
+    indexes.forEach((panelIndex, duplicateIndex) => {
+      suffixByIndex.set(panelIndex, duplicateIndex + 1);
+    });
+  }
+
+  return panels.map((panel, index) => {
+    const suffix = suffixByIndex.get(index);
+    if (!suffix) return input;
+
+    return {
+      ...input,
+      email: `${input.email}-${suffix}`
+    };
+  });
+}
+
 export function randomSubId(length = 16) {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let result = '';
@@ -167,10 +211,12 @@ export async function addClientToPanel(runtime, panel, input) {
 }
 
 export async function addClientToPanels(runtime, panels, input) {
+  const panelInputs = addDuplicatePanelEmailSuffixes(panels, input);
+
   return Promise.all(
-    panels.map(async (panel) => {
+    panels.map(async (panel, index) => {
       try {
-        return await addClientToPanel(runtime, panel, input);
+        return await addClientToPanel(runtime, panel, panelInputs[index]);
       } catch (error) {
         return {
           panel,

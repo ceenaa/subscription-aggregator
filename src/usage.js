@@ -31,8 +31,30 @@ export function parseSubscriptionUserInfo(value) {
   };
 }
 
+function normalizeUsageByLinkCount(usage, linkCount) {
+  const count = Number.parseInt(linkCount, 10);
+  if (!usage.hasData || !Number.isFinite(count) || count <= 1) return usage;
+
+  const upload = Math.round(usage.upload / count);
+  const download = Math.round(usage.download / count);
+  const total = Math.round(usage.total / count);
+  const used = upload + download;
+
+  return {
+    ...usage,
+    upload,
+    download,
+    used,
+    total,
+    remaining: total > 0 ? Math.max(total - used, 0) : 0
+  };
+}
+
 export function usageFromResult(result) {
-  return parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']);
+  return normalizeUsageByLinkCount(
+    parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']),
+    result.count
+  );
 }
 
 export function summarizeUsage(results) {

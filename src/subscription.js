@@ -58,7 +58,7 @@ function formatNoticeTime(updatedAt) {
       .map((part) => [part.type, part.value])
   );
 
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} Tehran`;
 }
 
 function decodeLinkName(value) {

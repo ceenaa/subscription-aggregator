@@ -15,11 +15,11 @@ import { buildSourceUrl, sourcesForToken } from '../src/source-url.js';
 import { renderQrSvg } from '../src/qr.js';
 import { renderSubscriptionPage } from '../src/page.js';
 import { renderInboundsPage } from '../src/inbounds-page.js';
-import { formatBytes, parseSubscriptionUserInfo } from '../src/usage.js';
+import { formatBytes, parseSubscriptionUserInfo, summarizeUsage, usageFromResult } from '../src/usage.js';
 import { loadConfig } from '../src/config.js';
 import { buildResponseHeaders } from '../src/response-headers.js';
 import { getRequestOrigin } from '../src/url-context.js';
-import { buildAddClientRequest, buildClientSettings } from '../src/panel-client.js';
+import { addClientToPanels, buildAddClientRequest, buildClientSettings } from '../src/panel-client.js';
 import { isAuthorized } from '../src/auth.js';
 import {
   buildListInboundsRequest,
@@ -313,6 +313,59 @@ test('applies panel total flow ratios as divisors to addClient requests', () => 
   assert.equal(second.settings.clients[0].totalGB, 2.5 * 1024 ** 3);
 });
 
+test('adds email suffixes when creating clients on duplicate panel URLs', async () => {
+  const input = {
+    clientId: '11111111-1111-4111-8111-111111111111',
+    email: 'client@example.com',
+    subId: 'clienttoken123',
+    totalGB: '5',
+    durationDays: '0',
+    enable: 'true',
+    startAfterFirstUse: 'false',
+    comment: ''
+  };
+  const panels = [
+    {
+      name: 'first-panel',
+      addClientUrl: 'https://same-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct',
+      totalGbRatio: 1
+    },
+    {
+      name: 'second-panel',
+      addClientUrl: 'https://same-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '6',
+      proxy: 'direct',
+      totalGbRatio: 1
+    },
+    {
+      name: 'third-panel',
+      addClientUrl: 'https://other-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '8',
+      proxy: 'direct',
+      totalGbRatio: 1
+    }
+  ];
+  const runtime = {
+    async request() {
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, obj: null })
+      };
+    }
+  };
+
+  const results = await addClientToPanels(runtime, panels, input);
+
+  assert.deepEqual(
+    results.map((result) => result.request.settings.clients[0].email),
+    ['client@example.com-1', 'client@example.com-2', 'client@example.com']
+  );
+  assert.equal(input.email, 'client@example.com');
+});
+
 test('builds 3x-ui list and update requests for the quota worker', () => {
   const panel = {
     name: 'first-panel',
@@ -408,7 +461,7 @@ test('normalizes combined used traffic to the lower quota', () => {
   assert.deepEqual(evaluation.reasons, ['combined normalized quota exceeded']);
 });
 
-test('quota worker skips fully disabled pairs and disables active pairs', async () => {
+test('quota worker skips fully disabled groups and disables active groups on every panel', async () => {
   const gib = 1024 ** 3;
   const firstPanel = {
     name: 'first-panel',
@@ -420,6 +473,12 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
     name: 'second-panel',
     addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
     inboundId: '4',
+    proxy: 'direct'
+  };
+  const thirdPanel = {
+    name: 'third-panel',
+    addClientUrl: 'https://third-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '6',
     proxy: 'direct'
   };
   const activeFirst = {
@@ -436,6 +495,13 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
     enable: true,
     totalGB: 10 * gib
   };
+  const activeThird = {
+    id: '55555555-5555-4555-8555-555555555555',
+    email: 'active',
+    subId: 'active-sub',
+    enable: true,
+    totalGB: 20 * gib
+  };
   const disabledFirst = {
     id: '33333333-3333-4333-8333-333333333333',
     email: 'disabled',
@@ -449,6 +515,13 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
     subId: 'disabled-sub',
     enable: false,
     totalGB: 10 * gib
+  };
+  const disabledThird = {
+    id: '66666666-6666-4666-8666-666666666666',
+    email: 'disabled',
+    subId: 'disabled-sub',
+    enable: false,
+    totalGB: 20 * gib
   };
   const firstInbound = {
     id: 4,
@@ -466,6 +539,14 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
       { subId: 'disabled-sub', enable: false, total: 10 * gib, allTime: 10 * gib }
     ]
   };
+  const thirdInbound = {
+    id: 6,
+    settings: JSON.stringify({ clients: [activeThird, disabledThird] }),
+    clientStats: [
+      { subId: 'active-sub', enable: true, total: 20 * gib, allTime: 0 },
+      { subId: 'disabled-sub', enable: false, total: 20 * gib, allTime: 20 * gib }
+    ]
+  };
   const requests = [];
   const runtime = {
     async request(target, options) {
@@ -476,7 +557,12 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
           headers: {},
           body: JSON.stringify({
             success: true,
-            obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
+            obj:
+              target.name === 'first-panel'
+                ? [firstInbound]
+                : target.name === 'second-panel'
+                  ? [secondInbound]
+                  : [thirdInbound]
           })
         };
       }
@@ -493,7 +579,7 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
     }
   };
 
-  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel, thirdPanel], {
     concurrency: 2,
     logger: { log() {} }
   });
@@ -504,7 +590,7 @@ test('quota worker skips fully disabled pairs and disables active pairs', async 
   assert.equal(result.partialDisabled.length, 0);
   assert.equal(result.disabled[0].subId, 'active-sub');
   assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), true);
-  assert.equal(updateRequests.length, 2);
+  assert.equal(updateRequests.length, 3);
 });
 
 test('quota worker treats clientStats enable as authoritative', async () => {
@@ -725,7 +811,11 @@ test('checks optional basic admin auth', () => {
       ADMIN_USERNAME: 'admin',
       ADMIN_PASSWORD: 'secret',
       FIRST_PANEL_TOTAL_GB_RATIO: '1.5',
-      SECOND_PANEL_TOTAL_GB_RATIO: '2'
+      SECOND_PANEL_TOTAL_GB_RATIO: '2',
+      THIRD_PANEL_NAME: 'third-panel',
+      THIRD_PANEL_ADD_CLIENT_URL: 'https://third-panel.example/secret/panel/api/inbounds/addClient',
+      THIRD_PANEL_INBOUND_ID: '6',
+      THIRD_PANEL_TOTAL_GB_RATIO: '3'
     })
   );
 
@@ -734,6 +824,9 @@ test('checks optional basic admin auth', () => {
   assert.equal(isAuthorized(config, { headers: { authorization: 'Basic bad' } }), false);
   assert.equal(config.panels[0].totalGbRatio, 1.5);
   assert.equal(config.panels[1].totalGbRatio, 2);
+  assert.equal(config.panels[2].name, 'third-panel');
+  assert.equal(config.panels[2].inboundId, '6');
+  assert.equal(config.panels[2].totalGbRatio, 3);
 });
 
 test('builds source URLs from base URLs and a route token', () => {
@@ -784,6 +877,38 @@ test('parses subscription usage headers', () => {
   assert.equal(usage.total, 8192);
   assert.equal(usage.remaining, 4096);
   assert.equal(formatBytes(usage.remaining), '4.00 KB');
+});
+
+test('normalizes usage to one limit when one panel returns multiple links', () => {
+  const usage = usageFromResult({
+    count: 2,
+    headers: {
+      'subscription-userinfo': 'upload=2048; download=2048; total=16384; expire=0'
+    }
+  });
+  const summary = summarizeUsage([
+    {
+      count: 2,
+      headers: {
+        'subscription-userinfo': 'upload=2048; download=2048; total=16384; expire=0'
+      }
+    },
+    {
+      count: 1,
+      headers: {
+        'subscription-userinfo': 'upload=1024; download=1024; total=8192; expire=0'
+      }
+    }
+  ]);
+
+  assert.equal(usage.upload, 1024);
+  assert.equal(usage.download, 1024);
+  assert.equal(usage.total, 8192);
+  assert.equal(usage.remaining, 6144);
+  assert.equal(summary.upload, 2048);
+  assert.equal(summary.download, 2048);
+  assert.equal(summary.total, 16384);
+  assert.equal(summary.remaining, 12288);
 });
 
 test('renders a local QR SVG', () => {
