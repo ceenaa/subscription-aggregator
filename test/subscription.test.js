@@ -80,14 +80,14 @@ test('adds a local shadowsocks notice config for subscription clients', () => {
 
   assert.match(notice, /^ss:\/\//);
   assert.match(notice, /@127\.0\.0\.1:1#/);
-  assert.match(noticeName, /آخرین بروزرسانی: 2026-05-30 16:04:56 Tehran/);
+  assert.match(noticeName, /آخرین بروزرسانی: 2026\/05\/30 16:04/);
   assert.equal(links.length, 3);
   assert.match(links[1], /^ss:\/\//);
   assert.match(links[1], /@127\.0\.0\.1:1#/);
   assert.match(links[2], /^ss:\/\//);
   assert.match(links[2], /@127\.0\.0\.1:2#/);
   assert.deepEqual(noticeNames, [
-    'آخرین بروزرسانی: 2026-05-30 16:04:56 Tehran',
+    'آخرین بروزرسانی: 2026/05/30 16:04',
     'لینک اشتراک را روزانه بروزرسانی کنید'
   ]);
   assert.deepEqual(extractSubscriptionLinks(`${links.join('\n')}\n`), links);
