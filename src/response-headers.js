@@ -5,7 +5,7 @@ const SECURITY_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
   'Content-Security-Policy':
-    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 };
 
 function appendVary(headers, value) {
@@ -50,7 +50,7 @@ export function buildResponseHeaders(config, request, contentType, extra = {}) {
   const corsOrigin = resolveCorsOrigin(config, request);
   if (corsOrigin) {
     headers['Access-Control-Allow-Origin'] = corsOrigin;
-    headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
+    headers['Access-Control-Allow-Methods'] = 'GET, HEAD, POST, OPTIONS';
     headers['Access-Control-Allow-Headers'] = 'Accept, Content-Type';
     headers['Access-Control-Expose-Headers'] = 'Subscription-Userinfo';
     appendVary(headers, 'Origin');

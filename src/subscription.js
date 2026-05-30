@@ -28,6 +28,80 @@ function toPaddedBase64(text) {
   return remainder === 0 ? normalized : normalized + '='.repeat(4 - remainder);
 }
 
+function toBase64Url(text) {
+  return Buffer.from(text, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function formatNoticeTime(updatedAt) {
+  const date = updatedAt instanceof Date ? updatedAt : new Date(updatedAt);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'unknown time';
+  }
+
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Tehran',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value])
+  );
+
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function decodeLinkName(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function formatQuotaRatio(value) {
+  const parsed = Number.parseFloat(value ?? 1);
+  return Number.isFinite(parsed) ? parsed.toString() : '1';
+}
+
+function appendLabelSuffix(label, suffix) {
+  const trimmedLabel = label.trim();
+  return trimmedLabel ? `${trimmedLabel} - ${suffix}` : suffix;
+}
+
+function appendUriFragmentSuffix(link, suffix) {
+  const hashIndex = link.indexOf('#');
+  const base = hashIndex === -1 ? link : link.slice(0, hashIndex);
+  const label = hashIndex === -1 ? '' : decodeLinkName(link.slice(hashIndex + 1));
+
+  return `${base}#${encodeURIComponent(appendLabelSuffix(label, suffix))}`;
+}
+
+function appendVmessLabelSuffix(link, suffix) {
+  const protocol = 'vmess://';
+  const payload = link.slice(protocol.length);
+  const hashIndex = payload.indexOf('#');
+  const encodedConfig = hashIndex === -1 ? payload : payload.slice(0, hashIndex);
+
+  try {
+    const config = JSON.parse(Buffer.from(toPaddedBase64(encodedConfig), 'base64').toString('utf8'));
+    config.ps = appendLabelSuffix(config.ps || '', suffix);
+    return `${protocol}${Buffer.from(JSON.stringify(config), 'utf8').toString('base64')}`;
+  } catch {
+    return appendUriFragmentSuffix(link, suffix);
+  }
+}
+
 export function isSubscriptionLink(line) {
   const separatorIndex = line.indexOf('://');
   if (separatorIndex <= 0) return false;
@@ -62,6 +136,45 @@ export function encodeSubscriptionLinks(links) {
 
 export function formatPlainSubscription(links) {
   return `${links.join('\n')}\n`;
+}
+
+export function buildSubscriptionNoticeLink(updatedAt = new Date()) {
+  const userInfo = toBase64Url('aes-128-gcm:subscription-notice');
+  const label = `آخرین بروزرسانی: ${formatNoticeTime(updatedAt)} - لطفا لینک اشتراک را روزانه بروزرسانی کنید`;
+
+  return `ss://${userInfo}@127.0.0.1:1#${encodeURIComponent(label)}`;
+}
+
+export function withSubscriptionNotice(links, updatedAt = new Date()) {
+  return [...links, buildSubscriptionNoticeLink(updatedAt)];
+}
+
+export function appendSubscriptionLinkNameSuffix(link, suffix) {
+  if (link.toLowerCase().startsWith('vmess://')) {
+    return appendVmessLabelSuffix(link, suffix);
+  }
+
+  return appendUriFragmentSuffix(link, suffix);
+}
+
+export function linksWithPanelRatioNames(results, panels = []) {
+  const seen = new Set();
+  const links = [];
+
+  results.forEach((result, index) => {
+    const ratio = panels[index]?.totalGbRatio ?? result.source?.totalGbRatio ?? 1;
+    const suffix = `مصرف با ضریب ${formatQuotaRatio(ratio)}`;
+
+    for (const link of result.links) {
+      const namedLink = appendSubscriptionLinkNameSuffix(link, suffix);
+      if (seen.has(namedLink)) continue;
+
+      seen.add(namedLink);
+      links.push(namedLink);
+    }
+  });
+
+  return links;
 }
 
 export async function aggregateSubscriptions(sources, fetchSource) {

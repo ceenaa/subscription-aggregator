@@ -1,7 +1,13 @@
 import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
 import { createSubscriptionFetcher } from './runtime.js';
-import { aggregateSubscriptions, formatPlainSubscription } from './subscription.js';
+import {
+  aggregateSubscriptions,
+  encodeSubscriptionLinks,
+  formatPlainSubscription,
+  linksWithPanelRatioNames,
+  withSubscriptionNotice
+} from './subscription.js';
 import { sourcesForToken } from './source-url.js';
 
 async function main() {
@@ -19,7 +25,13 @@ async function main() {
 
   try {
     const result = await aggregateSubscriptions(sourcesForToken(config.sources, token), runtime.fetch);
-    process.stdout.write(plainOutput ? formatPlainSubscription(result.links) : `${result.encoded}\n`);
+    const namedLinks = linksWithPanelRatioNames(result.results, config.panels);
+    const linksWithNotice = withSubscriptionNotice(namedLinks);
+    process.stdout.write(
+      plainOutput
+        ? formatPlainSubscription(linksWithNotice)
+        : `${encodeSubscriptionLinks(linksWithNotice)}\n`
+    );
   } finally {
     await runtime.close();
   }

@@ -30,6 +30,18 @@ function readOptionalIntegerEnv(env, name, fallback) {
   return parsed;
 }
 
+function readOptionalNumberEnv(env, name, fallback) {
+  const value = env[name];
+  if (!value) return fallback;
+
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive number`);
+  }
+
+  return parsed;
+}
+
 function readBooleanEnv(env, name, fallback = false) {
   const value = env[name];
   if (value === undefined || value === '') return fallback;
@@ -67,6 +79,13 @@ export function loadConfig(env = process.env) {
     cors: {
       origins: readCsvEnv(env, 'CORS_ORIGIN')
     },
+    worker: {
+      concurrency: readOptionalIntegerEnv(env, 'WORKER_CONCURRENCY', 5)
+    },
+    admin: {
+      username: env.ADMIN_USERNAME || '',
+      password: env.ADMIN_PASSWORD || ''
+    },
     xrayBin: readRequiredEnv(env, 'XRAY_BIN'),
     xrayOutboundLink: readRequiredEnv(env, 'XRAY_OUTBOUND_LINK'),
     sources: [
@@ -79,6 +98,24 @@ export function loadConfig(env = process.env) {
         name: env.SECOND_SUBSCRIPTION_NAME || 'nimcloud',
         baseUrl: readRequiredEnv(env, 'SECOND_SUBSCRIPTION_BASE_URL'),
         proxy: env.SECOND_SUBSCRIPTION_PROXY || 'direct'
+      }
+    ],
+    panels: [
+      {
+        name: env.FIRST_PANEL_NAME || 'first',
+        addClientUrl: env.FIRST_PANEL_ADD_CLIENT_URL || '',
+        cookie: env.FIRST_PANEL_COOKIE || '',
+        inboundId: env.FIRST_PANEL_INBOUND_ID || '',
+        proxy: env.FIRST_PANEL_PROXY || 'xray',
+        totalGbRatio: readOptionalNumberEnv(env, 'FIRST_PANEL_TOTAL_GB_RATIO', 1)
+      },
+      {
+        name: env.SECOND_PANEL_NAME || 'second',
+        addClientUrl: env.SECOND_PANEL_ADD_CLIENT_URL || '',
+        cookie: env.SECOND_PANEL_COOKIE || '',
+        inboundId: env.SECOND_PANEL_INBOUND_ID || '',
+        proxy: env.SECOND_PANEL_PROXY || 'direct',
+        totalGbRatio: readOptionalNumberEnv(env, 'SECOND_PANEL_TOTAL_GB_RATIO', 1)
       }
     ]
   };

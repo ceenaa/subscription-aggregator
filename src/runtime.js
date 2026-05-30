@@ -1,8 +1,15 @@
-import { fetchResponseDirect, fetchResponseViaHttpProxy } from './http-client.js';
+import {
+  fetchResponseDirect,
+  fetchResponseViaHttpProxy,
+  requestResponseDirect,
+  requestResponseViaHttpProxy
+} from './http-client.js';
 import { startXrayHttpProxy } from './xray.js';
 
 export async function createSubscriptionFetcher(config) {
-  const needsXray = config.sources.some((source) => source.proxy === 'xray');
+  const needsXray = [...config.sources, ...(config.panels || [])].some(
+    (target) => target.proxy === 'xray'
+  );
   const xrayProxy = needsXray
     ? await startXrayHttpProxy({
         vlessLink: config.xrayOutboundLink,
@@ -24,6 +31,25 @@ export async function createSubscriptionFetcher(config) {
       }
 
       return fetchResponseDirect(source.url, {
+        timeoutMs: config.requestTimeoutMs
+      });
+    },
+
+    async request(target, options) {
+      if (target.proxy === 'xray') {
+        if (!xrayProxy) {
+          throw new Error(`Target ${target.name} requires Xray, but Xray is not running`);
+        }
+
+        return requestResponseViaHttpProxy(target.url, {
+          ...options,
+          proxyPort: xrayProxy.port,
+          timeoutMs: config.requestTimeoutMs
+        });
+      }
+
+      return requestResponseDirect(target.url, {
+        ...options,
         timeoutMs: config.requestTimeoutMs
       });
     },

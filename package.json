@@ -11,6 +11,8 @@
     "start": "node src/server.js",
     "print": "node src/cli.js",
     "print:plain": "node src/cli.js --plain",
+    "worker:quota": "node src/quota-worker.js",
+    "worker:quota:dry-run": "node src/quota-worker.js --dry-run",
     "test": "node --test"
   }
 }

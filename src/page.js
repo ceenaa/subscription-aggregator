@@ -68,8 +68,22 @@ function subscriptionLinks(links) {
     .join('');
 }
 
-export function renderSubscriptionPage({ token, subscriptionUrl, plainUrl, base64Url, result }) {
+export function renderSubscriptionPage({
+  token,
+  subscriptionUrl,
+  plainUrl,
+  base64Url,
+  result,
+  updatedAt = new Date()
+}) {
   const qrSvg = renderQrSvg(subscriptionUrl);
+  const updatedDate = updatedAt instanceof Date ? updatedAt : new Date(updatedAt);
+  const updatedLabel = Number.isNaN(updatedDate.getTime())
+    ? 'Unknown'
+    : updatedDate.toLocaleString('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'medium'
+      });
 
   return `<!doctype html>
 <html lang="en">
@@ -222,6 +236,27 @@ export function renderSubscriptionPage({ token, subscriptionUrl, plainUrl, base6
       font-size: 13px;
       line-height: 1.5;
       overflow-wrap: anywhere;
+    }
+
+    .update-note {
+      margin-top: 14px;
+      padding: 12px;
+      border: 1px solid rgba(45, 212, 191, 0.45);
+      border-radius: 8px;
+      background: rgba(20, 184, 166, 0.12);
+    }
+
+    .update-note strong {
+      display: block;
+      color: #99f6e4;
+      font-size: 13px;
+    }
+
+    .update-note p {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
     }
 
     .sources {
@@ -378,6 +413,10 @@ export function renderSubscriptionPage({ token, subscriptionUrl, plainUrl, base6
       <aside class="qr-panel">
         <div class="qr-box">${qrSvg}</div>
         <div class="url-box">${escapeHtml(subscriptionUrl)}</div>
+        <div class="update-note">
+          <strong>Last updated: ${escapeHtml(updatedLabel)}</strong>
+          <p>Please update your subscription link daily to keep configs and usage information current.</p>
+        </div>
       </aside>
 
       <div>

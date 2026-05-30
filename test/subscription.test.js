@@ -3,18 +3,31 @@ import test from 'node:test';
 import { parseDotEnv } from '../src/env.js';
 import {
   aggregateSubscriptions,
+  buildSubscriptionNoticeLink,
   decodeSubscriptionText,
   encodeSubscriptionLinks,
-  extractSubscriptionLinks
+  extractSubscriptionLinks,
+  linksWithPanelRatioNames,
+  withSubscriptionNotice
 } from '../src/subscription.js';
 import { buildXrayConfigFromVlessLink } from '../src/xray.js';
 import { buildSourceUrl, sourcesForToken } from '../src/source-url.js';
 import { renderQrSvg } from '../src/qr.js';
 import { renderSubscriptionPage } from '../src/page.js';
+import { renderInboundsPage } from '../src/inbounds-page.js';
 import { formatBytes, parseSubscriptionUserInfo } from '../src/usage.js';
 import { loadConfig } from '../src/config.js';
 import { buildResponseHeaders } from '../src/response-headers.js';
 import { getRequestOrigin } from '../src/url-context.js';
+import { buildAddClientRequest, buildClientSettings } from '../src/panel-client.js';
+import { isAuthorized } from '../src/auth.js';
+import {
+  buildListInboundsRequest,
+  buildUpdateClientRequest,
+  enforcePanelQuota,
+  evaluateQuotaPair,
+  indexInboundClients
+} from '../src/quota-worker.js';
 
 function baseEnv(overrides = {}) {
   return {
@@ -59,6 +72,67 @@ test('aggregates subscriptions and removes exact duplicates', async () => {
   assert.equal(result.encoded, encodeSubscriptionLinks(result.links));
 });
 
+test('adds a local shadowsocks notice config for subscription clients', () => {
+  const notice = buildSubscriptionNoticeLink(new Date('2026-05-30T12:34:56Z'));
+  const noticeName = decodeURIComponent(notice.split('#')[1]);
+  const links = withSubscriptionNotice(['vless://user@example.com:443#real'], '2026-05-30T12:34:56Z');
+
+  assert.match(notice, /^ss:\/\//);
+  assert.match(notice, /@127\.0\.0\.1:1#/);
+  assert.match(noticeName, /آخرین بروزرسانی: 2026-05-30 16:04:56 Tehran/);
+  assert.match(noticeName, /لطفا لینک اشتراک را روزانه بروزرسانی کنید/);
+  assert.deepEqual(extractSubscriptionLinks(`${links.join('\n')}\n`), links);
+});
+
+test('adds panel ratio text to aggregated subscription link names', () => {
+  const namedLinks = linksWithPanelRatioNames(
+    [
+      {
+        source: { name: 'first' },
+        links: ['vless://user1@example.com:443?security=tls#first-node']
+      },
+      {
+        source: { name: 'second' },
+        links: ['trojan://user2@example.com:443?security=tls#second-node']
+      }
+    ],
+    [{ totalGbRatio: 1 }, { totalGbRatio: 2.5 }]
+  );
+
+  assert.equal(
+    decodeURIComponent(namedLinks[0].split('#')[1]),
+    'first-node - مصرف با ضریب 1'
+  );
+  assert.equal(
+    decodeURIComponent(namedLinks[1].split('#')[1]),
+    'second-node - مصرف با ضریب 2.5'
+  );
+});
+
+test('adds panel ratio text to vmess ps names', () => {
+  const vmessConfig = {
+    v: '2',
+    ps: 'vmess-node',
+    add: 'example.com',
+    port: '443',
+    id: '11111111-1111-4111-8111-111111111111',
+    aid: '0',
+    net: 'ws',
+    type: 'none',
+    host: 'example.com',
+    path: '/',
+    tls: 'tls'
+  };
+  const vmessLink = `vmess://${Buffer.from(JSON.stringify(vmessConfig), 'utf8').toString('base64')}`;
+  const [namedLink] = linksWithPanelRatioNames(
+    [{ source: { name: 'first' }, links: [vmessLink] }],
+    [{ totalGbRatio: 3 }]
+  );
+  const namedConfig = JSON.parse(Buffer.from(namedLink.slice('vmess://'.length), 'base64').toString('utf8'));
+
+  assert.equal(namedConfig.ps, 'vmess-node - مصرف با ضریب 3');
+});
+
 test('parses .env values with quotes', () => {
   assert.deepEqual(
     parseDotEnv(`
@@ -84,7 +158,8 @@ test('loads production HTTP, HTTPS, CORS, and proxy config', () => {
       HTTPS_HSTS_MAX_AGE: '31536000',
       TRUST_PROXY: 'true',
       PUBLIC_BASE_URL: 'https://subscriptions.example',
-      CORS_ORIGIN: 'https://app.example, https://admin.example'
+      CORS_ORIGIN: 'https://app.example, https://admin.example',
+      WORKER_CONCURRENCY: '7'
     })
   );
 
@@ -97,6 +172,7 @@ test('loads production HTTP, HTTPS, CORS, and proxy config', () => {
   assert.equal(config.trustProxy, true);
   assert.equal(config.publicBaseUrl, 'https://subscriptions.example');
   assert.deepEqual(config.cors.origins, ['https://app.example', 'https://admin.example']);
+  assert.equal(config.worker.concurrency, 7);
 });
 
 test('builds security and CORS response headers', () => {
@@ -127,6 +203,7 @@ test('builds security and CORS response headers', () => {
   assert.equal(headers['Access-Control-Expose-Headers'], 'Subscription-Userinfo');
   assert.equal(headers['Strict-Transport-Security'], 'max-age=15552000; includeSubDomains');
   assert.equal(headers['X-Content-Type-Options'], 'nosniff');
+  assert.match(headers['Content-Security-Policy'], /script-src 'self'/);
   assert.equal(headers['Subscription-Userinfo'], 'upload=1; download=2; total=3; expire=0');
   assert.match(headers.Vary, /Origin/);
   assert.match(headers.Vary, /Accept/);
@@ -160,6 +237,503 @@ test('builds public request origins from proxy headers or public base URL', () =
     ),
     'https://subscriptions.example'
   );
+});
+
+test('builds 3x-ui addClient form requests without real panel values', () => {
+  const panel = {
+    name: 'first-panel',
+    addClientUrl: 'https://panel.example/secret/panel/api/inbounds/addClient',
+    cookie: '3x-ui=fake-cookie; lang=en-US',
+    inboundId: '4',
+    proxy: 'xray'
+  };
+  const input = {
+    clientId: '11111111-1111-4111-8111-111111111111',
+    email: 'client@example.com',
+    subId: 'clienttoken123',
+    totalGB: '0',
+    durationDays: '0',
+    enable: 'true',
+    startAfterFirstUse: 'false',
+    comment: ''
+  };
+
+  const request = buildAddClientRequest(panel, input);
+  const body = new URLSearchParams(request.body);
+  const settings = JSON.parse(body.get('settings'));
+
+  assert.equal(body.get('id'), '4');
+  assert.equal(settings.clients[0].id, input.clientId);
+  assert.equal(settings.clients[0].email, input.email);
+  assert.equal(settings.clients[0].subId, input.subId);
+  assert.equal(settings.clients[0].totalGB, 0);
+  assert.equal(settings.clients[0].expiryTime, 0);
+  assert.equal(settings.clients[0].enable, true);
+  assert.equal(settings.clients[0].limitIp, 0);
+  assert.equal(settings.clients[0].tgId, '');
+  assert.equal(settings.clients[0].comment, '');
+  assert.equal(request.headers.Cookie, panel.cookie);
+  assert.equal(request.headers.Origin, 'https://panel.example');
+  assert.equal(request.method, 'POST');
+});
+
+test('applies panel total flow ratios as divisors to addClient requests', () => {
+  const input = {
+    clientId: '11111111-1111-4111-8111-111111111111',
+    email: 'client@example.com',
+    subId: 'clienttoken123',
+    totalGB: '5',
+    durationDays: '0',
+    enable: 'true',
+    startAfterFirstUse: 'false',
+    comment: ''
+  };
+  const first = buildAddClientRequest(
+    {
+      name: 'first-panel',
+      addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'xray',
+      totalGbRatio: 1
+    },
+    input
+  );
+  const second = buildAddClientRequest(
+    {
+      name: 'second-panel',
+      addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct',
+      totalGbRatio: 2
+    },
+    input
+  );
+
+  assert.equal(first.settings.clients[0].totalGB, 5 * 1024 ** 3);
+  assert.equal(second.settings.clients[0].totalGB, 2.5 * 1024 ** 3);
+});
+
+test('builds 3x-ui list and update requests for the quota worker', () => {
+  const panel = {
+    name: 'first-panel',
+    addClientUrl: 'https://panel.example/secret/panel/api/inbounds/addClient',
+    cookie: '3x-ui=fake-cookie; lang=en-US',
+    inboundId: '4',
+    proxy: 'xray'
+  };
+  const inbound = { id: 4 };
+  const client = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'client@example.com',
+    subId: 'clienttoken123',
+    enable: true,
+    totalGB: 5 * 1024 ** 3
+  };
+
+  const listRequest = buildListInboundsRequest(panel);
+  const updateRequest = buildUpdateClientRequest(panel, inbound, client);
+  const updateBody = new URLSearchParams(updateRequest.body);
+  const settings = JSON.parse(updateBody.get('settings'));
+
+  assert.equal(listRequest.url, 'https://panel.example/secret/panel/api/inbounds/list');
+  assert.equal(listRequest.headers.Cookie, panel.cookie);
+  assert.equal(updateRequest.url, 'https://panel.example/secret/panel/api/inbounds/updateClient/11111111-1111-4111-8111-111111111111');
+  assert.equal(updateBody.get('id'), '4');
+  assert.equal(settings.clients[0].enable, false);
+  assert.equal(settings.clients[0].totalGB, 5 * 1024 ** 3);
+  assert.equal(updateRequest.headers.Origin, 'https://panel.example');
+});
+
+test('indexes inbound clients and evaluates ratio quota conditions', () => {
+  const panel = { name: 'first-panel' };
+  const inbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          email: 'client@example.com',
+          subId: 'clienttoken123',
+          enable: true,
+          totalGB: 5 * 1024 ** 3
+        }
+      ]
+    }),
+    clientStats: [
+      {
+        subId: 'clienttoken123',
+        allTime: 6 * 1024 ** 3,
+        total: 5 * 1024 ** 3
+      }
+    ]
+  };
+  const clients = indexInboundClients(panel, inbound);
+  const first = clients.get('clienttoken123');
+  const second = {
+    ...first,
+    panel: { name: 'second-panel' },
+    total: 10 * 1024 ** 3,
+    allTime: 1 * 1024 ** 3
+  };
+  const unlimitedFirst = {
+    ...first,
+    total: 0,
+    allTime: 100 * 1024 ** 3
+  };
+
+  assert.equal(clients.size, 1);
+  assert.equal(first.email, 'client@example.com');
+  assert.equal(evaluateQuotaPair(first, second).exceeded, true);
+  assert.equal(evaluateQuotaPair(unlimitedFirst, second).exceeded, false);
+});
+
+test('normalizes combined used traffic to the lower quota', () => {
+  const gib = 1024 ** 3;
+  const first = {
+    panel: { name: 'first-panel' },
+    total: 5 * gib,
+    allTime: 2 * gib
+  };
+  const second = {
+    panel: { name: 'second-panel' },
+    total: 10 * gib,
+    allTime: 6 * gib
+  };
+  const evaluation = evaluateQuotaPair(first, second);
+
+  assert.equal(evaluation.exceeded, true);
+  assert.equal(evaluation.combinedTotal, 5 * gib);
+  assert.equal(evaluation.combinedAllTime, 5 * gib);
+  assert.equal(evaluation.combinedScale, 2);
+  assert.deepEqual(evaluation.reasons, ['combined normalized quota exceeded']);
+});
+
+test('quota worker skips fully disabled pairs and disables active pairs', async () => {
+  const gib = 1024 ** 3;
+  const firstPanel = {
+    name: 'first-panel',
+    addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const secondPanel = {
+    name: 'second-panel',
+    addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const activeFirst = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'active',
+    subId: 'active-sub',
+    enable: true,
+    totalGB: 5 * gib
+  };
+  const activeSecond = {
+    id: '22222222-2222-4222-8222-222222222222',
+    email: 'active',
+    subId: 'active-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const disabledFirst = {
+    id: '33333333-3333-4333-8333-333333333333',
+    email: 'disabled',
+    subId: 'disabled-sub',
+    enable: false,
+    totalGB: 5 * gib
+  };
+  const disabledSecond = {
+    id: '44444444-4444-4444-8444-444444444444',
+    email: 'disabled',
+    subId: 'disabled-sub',
+    enable: false,
+    totalGB: 10 * gib
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [activeFirst, disabledFirst] }),
+    clientStats: [
+      { subId: 'active-sub', enable: true, total: 5 * gib, allTime: 2 * gib },
+      { subId: 'disabled-sub', enable: false, total: 5 * gib, allTime: 5 * gib }
+    ]
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [activeSecond, disabledSecond] }),
+    clientStats: [
+      { subId: 'active-sub', enable: true, total: 10 * gib, allTime: 6 * gib },
+      { subId: 'disabled-sub', enable: false, total: 10 * gib, allTime: 10 * gib }
+    ]
+  };
+  const requests = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
+          })
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          msg: 'Inbound client has been updated.',
+          obj: null
+        })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+    concurrency: 2,
+    logger: { log() {} }
+  });
+  const updateRequests = requests.filter((request) => request.options.method === 'POST');
+
+  assert.equal(result.checked, 1);
+  assert.equal(result.disabled.length, 1);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.equal(result.disabled[0].subId, 'active-sub');
+  assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), true);
+  assert.equal(updateRequests.length, 2);
+});
+
+test('quota worker treats clientStats enable as authoritative', async () => {
+  const gib = 1024 ** 3;
+  const panels = [
+    {
+      name: 'first-panel',
+      addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct'
+    },
+    {
+      name: 'second-panel',
+      addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct'
+    }
+  ];
+  const inboundFor = (id, email) => ({
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id,
+          email,
+          subId: 'disabled-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [
+      {
+        subId: 'disabled-sub',
+        enable: false,
+        total: 5 * gib,
+        allTime: 6 * gib
+      }
+    ]
+  });
+  const requests = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          obj:
+            target.name === 'first-panel'
+              ? [inboundFor('11111111-1111-4111-8111-111111111111', 'disabled-first')]
+              : [inboundFor('22222222-2222-4222-8222-222222222222', 'disabled-second')]
+        })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, panels, {
+    concurrency: 2,
+    logger: { log() {} }
+  });
+
+  assert.equal(result.checked, 0);
+  assert.equal(result.disabled.length, 0);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), true);
+  assert.equal(requests.filter((request) => request.options.method === 'POST').length, 0);
+});
+
+test('quota worker logs partial disabled when only one panel update succeeds', async () => {
+  const gib = 1024 ** 3;
+  const firstPanel = {
+    name: 'first-panel',
+    addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const secondPanel = {
+    name: 'second-panel',
+    addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          email: 'partial',
+          subId: 'partial-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'partial-sub', enable: true, total: 5 * gib, allTime: 6 * gib }]
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          email: 'partial',
+          subId: 'partial-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'partial-sub', enable: true, uuid: '', total: 5 * gib, allTime: 6 * gib }]
+  };
+  const logs = [];
+  const runtime = {
+    async request(target, options) {
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
+          })
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+    concurrency: 2,
+    logger: { log(message) { logs.push(message); } }
+  });
+
+  assert.equal(result.disabled.length, 0);
+  assert.equal(result.partialDisabled.length, 1);
+  assert.equal(result.partialDisabled[0].subId, 'partial-sub');
+  assert.equal(result.partialDisabled[0].failed[0].panel, 'second-panel');
+  assert.equal(logs.some((line) => line.includes('partial disabled clients: 1')), true);
+});
+
+test('uses negative duration when start after first use is enabled', () => {
+  const settings = buildClientSettings({
+    clientId: '11111111-1111-4111-8111-111111111111',
+    email: 'client@example.com',
+    subId: 'clienttoken123',
+    totalGB: '10',
+    durationDays: '30',
+    startAfterFirstUse: 'true',
+    enable: 'false',
+    comment: 'client note'
+  });
+
+  assert.equal(settings.clients[0].totalGB, 10 * 1024 ** 3);
+  assert.equal(settings.clients[0].expiryTime, -30 * 24 * 60 * 60 * 1000);
+  assert.equal(settings.clients[0].enable, false);
+  assert.equal(settings.clients[0].comment, 'client note');
+});
+
+test('validates client settings form values', () => {
+  assert.throws(() =>
+    buildClientSettings({
+      clientId: '11111111-1111-4111-8111-111111111111',
+      email: '',
+      subId: 'clienttoken123',
+      totalGB: '10',
+      durationDays: '30'
+    })
+  );
+});
+
+test('renders the inbound form with 3x-ui visible fields', () => {
+  const html = renderInboundsPage({
+    values: {
+      clientId: '11111111-1111-4111-8111-111111111111',
+      email: 'client@example.com',
+      subId: 'clienttoken123',
+      totalGB: '0',
+      durationDays: '0',
+      enable: 'true',
+      startAfterFirstUse: 'false',
+      comment: ''
+    },
+    subscription: {
+      url: 'http://127.0.0.1:3000/sub/clienttoken123',
+      base64Url: 'http://127.0.0.1:3000/sub/clienttoken123?format=base64',
+      plainUrl: 'http://127.0.0.1:3000/sub/plain/clienttoken123'
+    }
+  });
+
+  assert.match(html, /Enabled/);
+  assert.match(html, /Email/);
+  assert.match(html, /data-random-email/);
+  assert.match(html, /Generate/);
+  assert.match(html, /Comment/);
+  assert.match(html, /Start After First Use/);
+  assert.match(html, /Total Flow/);
+  assert.match(html, /Aggregated Subscription/);
+  assert.match(html, /http:\/\/127\.0\.0\.1:3000\/sub\/clienttoken123/);
+  assert.match(html, /Base64/);
+  assert.match(html, /Plain/);
+  assert.match(html, /data-copy-text=/);
+  assert.match(html, /Click the URL to copy it/);
+  assert.match(html, /\/assets\/inbounds\.js/);
+  assert.doesNotMatch(html, /Telegram ID/);
+  assert.doesNotMatch(html, /IP limit/);
+});
+
+test('checks optional basic admin auth', () => {
+  const config = loadConfig(
+    baseEnv({
+      ADMIN_USERNAME: 'admin',
+      ADMIN_PASSWORD: 'secret',
+      FIRST_PANEL_TOTAL_GB_RATIO: '1.5',
+      SECOND_PANEL_TOTAL_GB_RATIO: '2'
+    })
+  );
+
+  const header = `Basic ${Buffer.from('admin:secret').toString('base64')}`;
+  assert.equal(isAuthorized(config, { headers: { authorization: header } }), true);
+  assert.equal(isAuthorized(config, { headers: { authorization: 'Basic bad' } }), false);
+  assert.equal(config.panels[0].totalGbRatio, 1.5);
+  assert.equal(config.panels[1].totalGbRatio, 2);
 });
 
 test('builds source URLs from base URLs and a route token', () => {
@@ -226,6 +800,7 @@ test('renders subscription info page without external assets', () => {
     subscriptionUrl: 'http://127.0.0.1:3000/sub/client-token',
     base64Url: 'http://127.0.0.1:3000/sub/client-token?format=base64',
     plainUrl: 'http://127.0.0.1:3000/sub/plain/client-token',
+    updatedAt: new Date('2026-05-30T12:34:56Z'),
     result: {
       links: ['vless://user@example.com:443?security=tls#example'],
       results: [
@@ -251,6 +826,8 @@ test('renders subscription info page without external assets', () => {
   assert.match(html, /first/);
   assert.match(html, /second/);
   assert.match(html, /QR code/);
+  assert.match(html, /Last updated:/);
+  assert.match(html, /Please update your subscription link daily/);
   assert.match(html, /http:\/\/127\.0\.0\.1:3000\/sub\/client-token/);
   assert.doesNotMatch(html, /<script/i);
 });

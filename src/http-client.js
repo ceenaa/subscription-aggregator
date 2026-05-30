@@ -10,6 +10,31 @@ const DEFAULT_HEADERS = {
   Connection: 'close'
 };
 
+function normalizeBody(body) {
+  if (body === undefined || body === null) return null;
+  return Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+}
+
+function requestHeaders(url, options = {}) {
+  const body = normalizeBody(options.body);
+  const headers = {
+    ...DEFAULT_HEADERS,
+    ...options.headers
+  };
+
+  if (body && !headers['Content-Length'] && !headers['content-length']) {
+    headers['Content-Length'] = String(body.length);
+  }
+
+  return {
+    body,
+    headers: {
+      Host: hostHeader(url),
+      ...headers
+    }
+  };
+}
+
 function requestPath(url) {
   return `${url.pathname || '/'}${url.search || ''}`;
 }
@@ -224,7 +249,7 @@ function openHttpTunnel({ proxyHost, proxyPort, targetHost, targetPort, timeoutM
   });
 }
 
-function sendHttpsRequestOverSocket(socket, url, timeoutMs) {
+function sendHttpsRequestOverSocket(socket, url, timeoutMs, options = {}) {
   return new Promise((resolve, reject) => {
     const tlsSocket = tls.connect({
       socket,
@@ -240,15 +265,16 @@ function sendHttpsRequestOverSocket(socket, url, timeoutMs) {
     const onSecureConnect = async () => {
       cleanup();
       try {
+        const { body, headers } = requestHeaders(url, options);
         tlsSocket.write(
           [
-            `GET ${requestPath(url)} HTTP/1.1`,
-            `Host: ${hostHeader(url)}`,
-            ...Object.entries(DEFAULT_HEADERS).map(([key, value]) => `${key}: ${value}`),
+            `${options.method || 'GET'} ${requestPath(url)} HTTP/1.1`,
+            ...Object.entries(headers).map(([key, value]) => `${key}: ${value}`),
             '',
             ''
           ].join('\r\n')
         );
+        if (body) tlsSocket.write(body);
 
         const responseBuffer = await readAllFromSocket(tlsSocket, timeoutMs);
         resolve(parseRawHttpResponse(responseBuffer));
@@ -267,14 +293,15 @@ function sendHttpsRequestOverSocket(socket, url, timeoutMs) {
   });
 }
 
-function requestDirect(url, timeoutMs) {
+function requestDirect(url, timeoutMs, options = {}) {
   return new Promise((resolve, reject) => {
     const transport = url.protocol === 'http:' ? http : https;
+    const { body, headers } = requestHeaders(url, options);
     const request = transport.request(
       url,
       {
-        method: 'GET',
-        headers: DEFAULT_HEADERS,
+        method: options.method || 'GET',
+        headers,
         timeout: timeoutMs
       },
       (response) => {
@@ -301,15 +328,16 @@ function requestDirect(url, timeoutMs) {
     });
 
     request.once('error', reject);
+    if (body) request.write(body);
     request.end();
   });
 }
 
-async function fetchWithRedirects(urlString, requestFn, timeoutMs, maxRedirects) {
+async function fetchWithRedirects(urlString, requestFn, timeoutMs, maxRedirects, options = {}) {
   let currentUrl = new URL(urlString);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
-    const response = await requestFn(currentUrl, timeoutMs);
+    const response = await requestFn(currentUrl, timeoutMs, options);
 
     if (shouldRedirect(response.statusCode)) {
       const location = response.headers.location;
@@ -345,7 +373,9 @@ export async function fetchTextDirect(url, options = {}) {
 export function fetchResponseDirect(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15000;
   const maxRedirects = options.maxRedirects ?? 3;
-  return fetchWithRedirects(url, requestDirect, timeoutMs, maxRedirects);
+  return fetchWithRedirects(url, requestDirect, timeoutMs, maxRedirects, {
+    method: 'GET'
+  });
 }
 
 export async function fetchTextViaHttpProxy(url, options) {
@@ -379,9 +409,51 @@ export function fetchResponseViaHttpProxy(url, options) {
         timeoutMs
       });
 
-      return sendHttpsRequestOverSocket(tunnel, currentUrl, timeoutMs);
+      return sendHttpsRequestOverSocket(tunnel, currentUrl, timeoutMs, {
+        method: 'GET'
+      });
     },
     timeoutMs,
     maxRedirects
+  );
+}
+
+export function requestResponseDirect(url, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const maxRedirects = options.maxRedirects ?? 0;
+  return fetchWithRedirects(url, requestDirect, timeoutMs, maxRedirects, options);
+}
+
+export function requestResponseViaHttpProxy(url, options) {
+  if (!options?.proxyPort) {
+    throw new Error('proxyPort is required');
+  }
+
+  const timeoutMs = options.timeoutMs ?? 15000;
+  const maxRedirects = options.maxRedirects ?? 0;
+  const proxyHost = options.proxyHost ?? '127.0.0.1';
+  const proxyPort = options.proxyPort;
+
+  return fetchWithRedirects(
+    url,
+    async (currentUrl, requestTimeoutMs, requestOptions) => {
+      if (currentUrl.protocol !== 'https:') {
+        throw new Error('Proxy request currently supports HTTPS URLs only');
+      }
+
+      const targetPort = currentUrl.port ? Number.parseInt(currentUrl.port, 10) : 443;
+      const tunnel = await openHttpTunnel({
+        proxyHost,
+        proxyPort,
+        targetHost: currentUrl.hostname,
+        targetPort,
+        timeoutMs: requestTimeoutMs
+      });
+
+      return sendHttpsRequestOverSocket(tunnel, currentUrl, requestTimeoutMs, requestOptions);
+    },
+    timeoutMs,
+    maxRedirects,
+    options
   );
 }
