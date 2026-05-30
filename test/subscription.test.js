@@ -76,11 +76,20 @@ test('adds a local shadowsocks notice config for subscription clients', () => {
   const notice = buildSubscriptionNoticeLink(new Date('2026-05-30T12:34:56Z'));
   const noticeName = decodeURIComponent(notice.split('#')[1]);
   const links = withSubscriptionNotice(['vless://user@example.com:443#real'], '2026-05-30T12:34:56Z');
+  const noticeNames = links.slice(1).map((link) => decodeURIComponent(link.split('#')[1]));
 
   assert.match(notice, /^ss:\/\//);
   assert.match(notice, /@127\.0\.0\.1:1#/);
   assert.match(noticeName, /آخرین بروزرسانی: 2026-05-30 16:04:56 Tehran/);
-  assert.match(noticeName, /لطفا لینک اشتراک را روزانه بروزرسانی کنید/);
+  assert.equal(links.length, 3);
+  assert.match(links[1], /^ss:\/\//);
+  assert.match(links[1], /@127\.0\.0\.1:1#/);
+  assert.match(links[2], /^ss:\/\//);
+  assert.match(links[2], /@127\.0\.0\.1:2#/);
+  assert.deepEqual(noticeNames, [
+    'آخرین بروزرسانی: 2026-05-30 16:04:56 Tehran',
+    'لینک اشتراک را روزانه بروزرسانی کنید'
+  ]);
   assert.deepEqual(extractSubscriptionLinks(`${links.join('\n')}\n`), links);
 });
 

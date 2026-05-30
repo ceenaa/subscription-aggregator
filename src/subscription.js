@@ -139,14 +139,23 @@ export function formatPlainSubscription(links) {
 }
 
 export function buildSubscriptionNoticeLink(updatedAt = new Date()) {
-  const userInfo = toBase64Url('aes-128-gcm:subscription-notice');
-  const label = `آخرین بروزرسانی: ${formatNoticeTime(updatedAt)} - لطفا لینک اشتراک را روزانه بروزرسانی کنید`;
+  const userInfo = toBase64Url('aes-128-gcm:subscription-notice-updated-at');
+  const label = `آخرین بروزرسانی: ${formatNoticeTime(updatedAt)}`;
 
   return `ss://${userInfo}@127.0.0.1:1#${encodeURIComponent(label)}`;
 }
 
+export function buildSubscriptionNoticeLinks(updatedAt = new Date()) {
+  const dailyUpdateUserInfo = toBase64Url('aes-128-gcm:subscription-notice-daily-update');
+
+  return [
+    buildSubscriptionNoticeLink(updatedAt),
+    `ss://${dailyUpdateUserInfo}@127.0.0.1:2#${encodeURIComponent('لینک اشتراک را روزانه بروزرسانی کنید')}`
+  ];
+}
+
 export function withSubscriptionNotice(links, updatedAt = new Date()) {
-  return [...links, buildSubscriptionNoticeLink(updatedAt)];
+  return [...links, ...buildSubscriptionNoticeLinks(updatedAt)];
 }
 
 export function appendSubscriptionLinkNameSuffix(link, suffix) {
