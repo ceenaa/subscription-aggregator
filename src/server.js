@@ -1,4 +1,6 @@
 import http from 'node:http';
+import https from 'node:https';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
@@ -10,30 +12,30 @@ import { sourcesForToken } from './source-url.js';
 import { createSubscriptionFetcher } from './runtime.js';
 import { renderSubscriptionPage } from './page.js';
 import { formatSubscriptionUserInfo, summarizeUsage } from './usage.js';
+import { buildResponseHeaders } from './response-headers.js';
+import { absoluteSubscriptionUrl, getRequestUrl } from './url-context.js';
 
-function sendText(response, statusCode, body, headers = {}) {
-  response.writeHead(statusCode, {
-    'Content-Type': 'text/plain; charset=utf-8',
-    'Cache-Control': 'no-store',
-    ...headers
-  });
+function sendText(config, request, response, statusCode, body, headers = {}) {
+  response.writeHead(
+    statusCode,
+    buildResponseHeaders(config, request, 'text/plain; charset=utf-8', headers)
+  );
   response.end(body);
 }
 
-function sendHtml(response, statusCode, body, headers = {}) {
-  response.writeHead(statusCode, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-store',
-    ...headers
-  });
+function sendHtml(config, request, response, statusCode, body, headers = {}) {
+  response.writeHead(
+    statusCode,
+    buildResponseHeaders(config, request, 'text/html; charset=utf-8', headers)
+  );
   response.end(body);
 }
 
-function sendJson(response, statusCode, body) {
-  response.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store'
-  });
+function sendJson(config, request, response, statusCode, body, headers = {}) {
+  response.writeHead(
+    statusCode,
+    buildResponseHeaders(config, request, 'application/json; charset=utf-8', headers)
+  );
   response.end(`${JSON.stringify(body, null, 2)}\n`);
 }
 
@@ -43,25 +45,53 @@ function wantsHtml(request, url) {
   return request.headers.accept?.includes('text/html') ?? false;
 }
 
-function absoluteSubscriptionUrl(url, token) {
-  return `${url.origin}/sub/${encodeURIComponent(token)}`;
+function sendNoContent(config, request, response, statusCode = 204) {
+  response.writeHead(statusCode, buildResponseHeaders(config, request));
+  response.end();
+}
+
+async function createNodeServer(config, handler) {
+  if (!config.https.enabled) return http.createServer(handler);
+
+  const tlsOptions = {
+    key: await readFile(config.https.keyPath),
+    cert: await readFile(config.https.certPath)
+  };
+
+  if (config.https.caPath) {
+    tlsOptions.ca = await readFile(config.https.caPath);
+  }
+
+  return https.createServer(tlsOptions, handler);
 }
 
 export async function createServer(config = loadConfig()) {
-  const runtime = await createSubscriptionFetcher(config);
+  let runtime;
 
-  const server = http.createServer(async (request, response) => {
+  const server = await createNodeServer(config, async (request, response) => {
     try {
-      const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+      if (!runtime) {
+        sendJson(config, request, response, 503, { error: 'Server is not ready' });
+        return;
+      }
+
+      const url = getRequestUrl(config, request);
       const pathSegments = url.pathname.split('/').filter(Boolean);
 
-      if (request.method !== 'GET') {
-        sendJson(response, 405, { error: 'Only GET is supported' });
+      if (request.method === 'OPTIONS') {
+        sendNoContent(config, request, response);
+        return;
+      }
+
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        sendJson(config, request, response, 405, { error: 'Only GET and HEAD are supported' }, {
+          Allow: 'GET, HEAD, OPTIONS'
+        });
         return;
       }
 
       if (url.pathname === '/health') {
-        sendJson(response, 200, { ok: true });
+        sendJson(config, request, response, 200, { ok: true });
         return;
       }
 
@@ -72,6 +102,8 @@ export async function createServer(config = loadConfig()) {
 
       if (!isBase64Subscription && !isPlainSubscription) {
         sendText(
+          config,
+          request,
           response,
           404,
           'Use /sub/:token for base64 subscription output or /sub/plain/:token for decoded links.\n'
@@ -86,15 +118,17 @@ export async function createServer(config = loadConfig()) {
       const usageHeader = formatSubscriptionUserInfo(usageSummary);
 
       if (isPlainSubscription) {
-        sendText(response, 200, formatPlainSubscription(result.links), {
+        sendText(config, request, response, 200, formatPlainSubscription(result.links), {
           'Subscription-Userinfo': usageHeader
         });
         return;
       }
 
       if (wantsHtml(request, url)) {
-        const subscriptionUrl = absoluteSubscriptionUrl(url, token);
+        const subscriptionUrl = absoluteSubscriptionUrl(config, request, token);
         sendHtml(
+          config,
+          request,
           response,
           200,
           renderSubscriptionPage({
@@ -111,15 +145,17 @@ export async function createServer(config = loadConfig()) {
         return;
       }
 
-      sendText(response, 200, `${result.encoded}\n`, {
+      sendText(config, request, response, 200, `${result.encoded}\n`, {
         'Subscription-Userinfo': usageHeader
       });
     } catch (error) {
-      sendJson(response, 502, {
+      sendJson(config, request, response, 502, {
         error: error.message
       });
     }
   });
+
+  runtime = await createSubscriptionFetcher(config);
 
   return {
     server,
@@ -127,7 +163,7 @@ export async function createServer(config = loadConfig()) {
       await new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
-      await runtime.close();
+      await runtime?.close();
     }
   };
 }
@@ -138,10 +174,14 @@ async function main() {
   const config = loadConfig();
   const app = await createServer(config);
 
-  app.server.listen(config.port, () => {
-    console.log(`subscription aggregator listening on http://127.0.0.1:${config.port}`);
-    console.log(`base64 subscription: http://127.0.0.1:${config.port}/sub/:token`);
-    console.log(`plain links:          http://127.0.0.1:${config.port}/sub/plain/:token`);
+  app.server.listen(config.port, config.host, () => {
+    const protocol = config.https.enabled ? 'https' : 'http';
+    const displayHost = config.host === '0.0.0.0' ? '127.0.0.1' : config.host;
+    const origin = config.publicBaseUrl || `${protocol}://${displayHost}:${config.port}`;
+
+    console.log(`subscription aggregator listening on ${origin}`);
+    console.log(`base64 subscription: ${origin}/sub/:token`);
+    console.log(`plain links:          ${origin}/sub/plain/:token`);
   });
 
   const shutdown = async () => {

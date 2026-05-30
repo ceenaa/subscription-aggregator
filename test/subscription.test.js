@@ -12,6 +12,22 @@ import { buildSourceUrl, sourcesForToken } from '../src/source-url.js';
 import { renderQrSvg } from '../src/qr.js';
 import { renderSubscriptionPage } from '../src/page.js';
 import { formatBytes, parseSubscriptionUserInfo } from '../src/usage.js';
+import { loadConfig } from '../src/config.js';
+import { buildResponseHeaders } from '../src/response-headers.js';
+import { getRequestOrigin } from '../src/url-context.js';
+
+function baseEnv(overrides = {}) {
+  return {
+    PORT: '3000',
+    REQUEST_TIMEOUT_MS: '15000',
+    XRAY_BIN: './xray',
+    FIRST_SUBSCRIPTION_BASE_URL: 'https://first-provider.example/sub',
+    SECOND_SUBSCRIPTION_BASE_URL: 'https://second-provider.example/sub',
+    XRAY_OUTBOUND_LINK:
+      'vless://11111111-1111-4111-8111-111111111111@proxy.example:443?type=ws&encryption=none&path=%2F&host=edge.example&security=tls&sni=tls.example#test-proxy',
+    ...overrides
+  };
+}
 
 test('decodes a base64 v2ray subscription body', () => {
   const link = 'vless://user@example.com:443?security=tls#example';
@@ -55,6 +71,94 @@ FIRST_SUBSCRIPTION_BASE_URL=https://example.com/sub
       XRAY_OUTBOUND_LINK: 'vless://id@example.com:443?type=ws#name',
       FIRST_SUBSCRIPTION_BASE_URL: 'https://example.com/sub'
     }
+  );
+});
+
+test('loads production HTTP, HTTPS, CORS, and proxy config', () => {
+  const config = loadConfig(
+    baseEnv({
+      HOST: '0.0.0.0',
+      HTTPS_ENABLED: 'true',
+      HTTPS_KEY_PATH: '/tmp/key.pem',
+      HTTPS_CERT_PATH: '/tmp/cert.pem',
+      HTTPS_HSTS_MAX_AGE: '31536000',
+      TRUST_PROXY: 'true',
+      PUBLIC_BASE_URL: 'https://subscriptions.example',
+      CORS_ORIGIN: 'https://app.example, https://admin.example'
+    })
+  );
+
+  assert.equal(config.host, '0.0.0.0');
+  assert.equal(config.https.enabled, true);
+  assert.equal(config.https.keyPath, '/tmp/key.pem');
+  assert.equal(config.https.certPath, '/tmp/cert.pem');
+  assert.equal(config.https.hstsEnabled, true);
+  assert.equal(config.https.hstsMaxAge, 31536000);
+  assert.equal(config.trustProxy, true);
+  assert.equal(config.publicBaseUrl, 'https://subscriptions.example');
+  assert.deepEqual(config.cors.origins, ['https://app.example', 'https://admin.example']);
+});
+
+test('builds security and CORS response headers', () => {
+  const config = loadConfig(
+    baseEnv({
+      HTTPS_ENABLED: 'true',
+      HTTPS_KEY_PATH: '/tmp/key.pem',
+      HTTPS_CERT_PATH: '/tmp/cert.pem',
+      CORS_ORIGIN: 'https://app.example'
+    })
+  );
+
+  const headers = buildResponseHeaders(
+    config,
+    {
+      headers: {
+        origin: 'https://app.example',
+        accept: 'text/html'
+      }
+    },
+    'text/html; charset=utf-8',
+    {
+      'Subscription-Userinfo': 'upload=1; download=2; total=3; expire=0'
+    }
+  );
+
+  assert.equal(headers['Access-Control-Allow-Origin'], 'https://app.example');
+  assert.equal(headers['Access-Control-Expose-Headers'], 'Subscription-Userinfo');
+  assert.equal(headers['Strict-Transport-Security'], 'max-age=15552000; includeSubDomains');
+  assert.equal(headers['X-Content-Type-Options'], 'nosniff');
+  assert.equal(headers['Subscription-Userinfo'], 'upload=1; download=2; total=3; expire=0');
+  assert.match(headers.Vary, /Origin/);
+  assert.match(headers.Vary, /Accept/);
+});
+
+test('builds public request origins from proxy headers or public base URL', () => {
+  assert.equal(
+    getRequestOrigin(
+      loadConfig(baseEnv({ TRUST_PROXY: 'true' })),
+      {
+        headers: {
+          host: 'internal.example',
+          'x-forwarded-host': 'public.example',
+          'x-forwarded-proto': 'https'
+        },
+        socket: {}
+      }
+    ),
+    'https://public.example'
+  );
+
+  assert.equal(
+    getRequestOrigin(
+      loadConfig(baseEnv({ PUBLIC_BASE_URL: 'https://subscriptions.example/' })),
+      {
+        headers: {
+          host: 'internal.example'
+        },
+        socket: {}
+      }
+    ),
+    'https://subscriptions.example'
   );
 });
 

@@ -4,6 +4,10 @@ node_modules/
 .idea/
 *.log
 *.zip
+*.pem
+*.key
+*.crt
+certs/
 Xray-*/
 xray
 geoip.dat

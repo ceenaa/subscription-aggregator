@@ -42,6 +42,7 @@ Create a `.env` file in this project directory. The app loads it automatically b
 
 ```sh
 PORT=3000
+HOST=127.0.0.1
 REQUEST_TIMEOUT_MS=15000
 XRAY_BIN=xray
 
@@ -50,6 +51,17 @@ FIRST_SUBSCRIPTION_PROXY=xray
 SECOND_SUBSCRIPTION_BASE_URL=https://second-provider.example/sub
 SECOND_SUBSCRIPTION_PROXY=direct
 XRAY_OUTBOUND_LINK='vless://YOUR_UUID@proxy-host.example:443?type=ws&encryption=none&path=%2F&host=proxy-host.example&security=tls&fp=chrome&alpn=h2%2Chttp%2F1.1&sni=proxy-host.example#proxy-name'
+
+HTTPS_ENABLED=false
+HTTPS_KEY_PATH=
+HTTPS_CERT_PATH=
+HTTPS_CA_PATH=
+HTTPS_HSTS_ENABLED=false
+HTTPS_HSTS_MAX_AGE=15552000
+
+PUBLIC_BASE_URL=
+TRUST_PROXY=false
+CORS_ORIGIN=
 ```
 
 Shell environment variables override `.env` values. For example:
@@ -63,6 +75,40 @@ If Xray is only inside this project and not installed globally, set:
 ```sh
 XRAY_BIN=./Xray-macos-arm64-v8a/xray
 ```
+
+## HTTPS And Production
+
+For direct HTTPS from Node, provide a certificate and private key:
+
+```sh
+HOST=0.0.0.0
+PORT=3443
+HTTPS_ENABLED=true
+HTTPS_KEY_PATH=/absolute/path/to/privkey.pem
+HTTPS_CERT_PATH=/absolute/path/to/fullchain.pem
+HTTPS_HSTS_ENABLED=true
+PUBLIC_BASE_URL=https://subscriptions.example.com
+```
+
+For production behind Nginx, Caddy, Cloudflare Tunnel, or another TLS reverse proxy, keep Node on HTTP and set the public URL used for QR codes:
+
+```sh
+HOST=127.0.0.1
+PORT=3000
+HTTPS_ENABLED=false
+PUBLIC_BASE_URL=https://subscriptions.example.com
+TRUST_PROXY=true
+```
+
+Enable CORS only for origins that need browser access to the raw subscription response:
+
+```sh
+CORS_ORIGIN=https://app.example.com,https://admin.example.com
+```
+
+Use `CORS_ORIGIN=*` only for a fully public service. The server exposes the `Subscription-Userinfo` header for browser clients and handles `OPTIONS` preflight requests.
+
+The server also sends baseline production headers: `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Cross-Origin-Opener-Policy`, and `Cross-Origin-Resource-Policy`. HSTS is sent when `HTTPS_HSTS_ENABLED=true`.
 
 ## Notes
 
