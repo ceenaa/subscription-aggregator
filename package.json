@@ -1,0 +1,16 @@
+{
+  "name": "subscription-aggregator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Aggregate multiple V2Ray/Xray subscription links into one subscription.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "print": "node src/cli.js",
+    "print:plain": "node src/cli.js --plain",
+    "test": "node --test"
+  }
+}
