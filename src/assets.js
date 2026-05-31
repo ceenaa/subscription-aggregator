@@ -1,11 +1,4 @@
-export const INBOUNDS_SCRIPT = `(() => {
-  function randomLabel(length = 8) {
-    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    const bytes = new Uint8Array(length);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
-  }
-
+export const COPY_SCRIPT = `(() => {
   async function copyText(text) {
     if (navigator.clipboard?.writeText) {
       try {
@@ -53,6 +46,16 @@ export const INBOUNDS_SCRIPT = `(() => {
         run();
       }
     });
+  }
+})();`;
+
+export const INBOUNDS_SCRIPT = `${COPY_SCRIPT}
+(() => {
+  function randomLabel(length = 8) {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const bytes = new Uint8Array(length);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
   }
 
   for (const button of document.querySelectorAll('[data-random-email]')) {

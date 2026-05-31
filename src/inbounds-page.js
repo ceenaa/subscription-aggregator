@@ -1,5 +1,6 @@
 import { defaultInboundFormValues } from './panel-client.js';
 import { renderQrSvg } from './qr.js';
+import { subscriptionAppLinks } from './app-links.js';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -88,8 +89,22 @@ function resultRows(results) {
   `;
 }
 
+function appLinkButtons(subscriptionUrl, name) {
+  return subscriptionAppLinks(subscriptionUrl, name)
+    .map(
+      (link) => `
+        <a href="${escapeHtml(link.href)}">
+          <img src="${escapeHtml(link.icon)}" alt="" aria-hidden="true">
+          <span>${escapeHtml(link.label)}</span>
+        </a>
+      `
+    )
+    .join('');
+}
+
 function subscriptionResult(subscription) {
   if (!subscription) return '';
+  const name = subscription.name || 'Subscription';
 
   return `
     <section class="subscription-result">
@@ -112,6 +127,9 @@ function subscriptionResult(subscription) {
             <a href="${escapeHtml(subscription.url)}">Info Page</a>
             <a href="${escapeHtml(subscription.base64Url)}">Base64</a>
             <a href="${escapeHtml(subscription.plainUrl)}">Plain</a>
+          </div>
+          <div class="app-actions" aria-label="Open subscription in app">
+            ${appLinkButtons(subscription.url, name)}
           </div>
         </div>
       </div>
@@ -377,10 +395,18 @@ export function renderInboundsPage({
       gap: 10px;
     }
 
-    .link-actions a {
+    .app-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .link-actions a,
+    .app-actions a {
       min-height: 38px;
       display: inline-flex;
       align-items: center;
+      gap: 9px;
       padding: 8px 12px;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -388,6 +414,19 @@ export function renderInboundsPage({
       background: #0b1525;
       text-decoration: none;
       font-weight: 700;
+    }
+
+    .app-actions a {
+      border-color: rgba(45, 212, 191, 0.5);
+      background: rgba(20, 184, 166, 0.1);
+    }
+
+    .app-actions img {
+      width: 22px;
+      height: 22px;
+      flex: 0 0 22px;
+      border-radius: 6px;
+      object-fit: cover;
     }
 
     .result {

@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
 import { createSubscriptionFetcher } from './runtime.js';
+import { normalizeCombinedUsage } from './usage.js';
 
 function requirePanelField(panel, field) {
   if (!panel[field]) {
@@ -106,27 +107,6 @@ function formatPanelList(names) {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-function normalizedCombinedUsage(entries) {
-  if (entries.some((entry) => entry.total <= 0)) {
-    return {
-      total: 0,
-      used: 0,
-      scale: 0,
-      scales: []
-    };
-  }
-
-  const lower = entries.reduce((lowest, entry) => (entry.total < lowest.total ? entry : lowest), entries[0]);
-  const scales = entries.map((entry) => entry.total / lower.total);
-
-  return {
-    total: lower.total,
-    used: entries.reduce((sum, entry, index) => sum + entry.allTime / scales[index], 0),
-    scale: Math.max(...scales),
-    scales
-  };
-}
-
 async function mapLimit(items, concurrency, mapper) {
   const limit = Math.max(1, Number.parseInt(concurrency, 10) || 1);
   const results = new Array(items.length);
@@ -225,7 +205,7 @@ export function evaluateQuotaGroup(entries) {
     }
   }
 
-  const combined = normalizedCombinedUsage(entries);
+  const combined = normalizeCombinedUsage(entries);
 
   if (combined.total > 0 && combined.used >= combined.total) {
     reasons.push('combined normalized quota exceeded');

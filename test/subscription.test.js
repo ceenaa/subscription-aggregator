@@ -4,6 +4,7 @@ import { parseDotEnv } from '../src/env.js';
 import {
   aggregateSubscriptions,
   buildSubscriptionNoticeLink,
+  buildSubscriptionRemainingNoticeLink,
   decodeSubscriptionText,
   encodeSubscriptionLinks,
   extractSubscriptionLinks,
@@ -15,7 +16,15 @@ import { buildSourceUrl, sourcesForToken } from '../src/source-url.js';
 import { renderQrSvg } from '../src/qr.js';
 import { renderSubscriptionPage } from '../src/page.js';
 import { renderInboundsPage } from '../src/inbounds-page.js';
-import { formatBytes, parseSubscriptionUserInfo, summarizeUsage, usageFromResult } from '../src/usage.js';
+import { subscriptionAppLinks } from '../src/app-links.js';
+import {
+  formatBytes,
+  normalizeCombinedUsage,
+  parseSubscriptionUserInfo,
+  summarizeNormalizedUsage,
+  summarizeUsage,
+  usageFromResult
+} from '../src/usage.js';
 import { loadConfig } from '../src/config.js';
 import { buildResponseHeaders } from '../src/response-headers.js';
 import { getRequestOrigin } from '../src/url-context.js';
@@ -74,18 +83,38 @@ test('aggregates subscriptions and removes exact duplicates', async () => {
 
 test('adds a local shadowsocks notice config for subscription clients', () => {
   const notice = buildSubscriptionNoticeLink(new Date('2026-05-30T12:34:56Z'));
+  const remainingNotice = buildSubscriptionRemainingNoticeLink({
+    hasData: true,
+    remaining: 5 * 1024 ** 3
+  });
   const noticeName = decodeURIComponent(notice.split('#')[1]);
+  const remainingNoticeName = decodeURIComponent(remainingNotice.split('#')[1]);
   const links = withSubscriptionNotice(['vless://user@example.com:443#real'], '2026-05-30T12:34:56Z');
+  const linksWithUsage = withSubscriptionNotice(
+    ['vless://user@example.com:443#real'],
+    '2026-05-30T12:34:56Z',
+    {
+      hasData: true,
+      remaining: 5 * 1024 ** 3
+    }
+  );
   const noticeNames = links.slice(1).map((link) => decodeURIComponent(link.split('#')[1]));
+  const usageNoticeName = decodeURIComponent(linksWithUsage[3].split('#')[1]);
 
   assert.match(notice, /^ss:\/\//);
   assert.match(notice, /@127\.0\.0\.1:1#/);
+  assert.match(remainingNotice, /^ss:\/\//);
+  assert.match(remainingNotice, /@127\.0\.0\.1:3#/);
   assert.match(noticeName, /آخرین بروزرسانی: 2026\/05\/30 16:04/);
+  assert.equal(remainingNoticeName, 'باقیمانده کل: 5.00 GB');
   assert.equal(links.length, 3);
+  assert.equal(linksWithUsage.length, 4);
   assert.match(links[1], /^ss:\/\//);
   assert.match(links[1], /@127\.0\.0\.1:1#/);
   assert.match(links[2], /^ss:\/\//);
   assert.match(links[2], /@127\.0\.0\.1:2#/);
+  assert.match(linksWithUsage[3], /@127\.0\.0\.1:3#/);
+  assert.equal(usageNoticeName, 'باقیمانده کل: 5.00 GB');
   assert.deepEqual(noticeNames, [
     'آخرین بروزرسانی: 2026/05/30 16:04',
     'لینک اشتراک را روزانه بروزرسانی کنید'
@@ -462,12 +491,17 @@ test('normalizes combined used traffic to the lower quota', () => {
     allTime: 6 * gib
   };
   const evaluation = evaluateQuotaPair(first, second);
+  const combined = normalizeCombinedUsage([first, second]);
 
   assert.equal(evaluation.exceeded, true);
   assert.equal(evaluation.combinedTotal, 5 * gib);
   assert.equal(evaluation.combinedAllTime, 5 * gib);
   assert.equal(evaluation.combinedScale, 2);
   assert.deepEqual(evaluation.reasons, ['combined normalized quota exceeded']);
+  assert.equal(combined.total, 5 * gib);
+  assert.equal(combined.used, 5 * gib);
+  assert.equal(combined.remaining, 0);
+  assert.equal(combined.scale, 2);
 });
 
 test('quota worker skips fully disabled groups and disables active groups on every panel', async () => {
@@ -807,11 +841,43 @@ test('renders the inbound form with 3x-ui visible fields', () => {
   assert.match(html, /http:\/\/127\.0\.0\.1:3000\/sub\/clienttoken123/);
   assert.match(html, /Base64/);
   assert.match(html, /Plain/);
+  assert.match(html, /Streisand iOS/);
+  assert.match(html, /V2Box iOS/);
+  assert.match(html, /v2rayNG Android/);
+  assert.match(html, /\/logos\/streisand\.jpg/);
+  assert.match(html, /\/logos\/v2box\.jpg/);
+  assert.match(html, /\/logos\/v2rayng\.png/);
+  assert.match(html, /streisand:\/\/import\/http:\/\/127\.0\.0\.1:3000\/sub\/clienttoken123#Subscription/);
+  assert.match(html, /v2box:\/\/install-sub\?url=http%3A%2F%2F127\.0\.0\.1%3A3000%2Fsub%2Fclienttoken123&amp;name=Subscription/);
+  assert.match(html, /v2rayng:\/\/install-sub\?url=http%3A%2F%2F127\.0\.0\.1%3A3000%2Fsub%2Fclienttoken123&amp;name=Subscription/);
   assert.match(html, /data-copy-text=/);
   assert.match(html, /Click the URL to copy it/);
   assert.match(html, /\/assets\/inbounds\.js/);
   assert.doesNotMatch(html, /Telegram ID/);
   assert.doesNotMatch(html, /IP limit/);
+});
+
+test('builds app links for subscription clients', () => {
+  assert.deepEqual(
+    subscriptionAppLinks('https://subscriptions.example/sub/client-token?format=base64', 'client token'),
+    [
+      {
+        label: 'Streisand iOS',
+        href: 'streisand://import/https://subscriptions.example/sub/client-token?format=base64#client%20token',
+        icon: '/logos/streisand.jpg'
+      },
+      {
+        label: 'V2Box iOS',
+        href: 'v2box://install-sub?url=https%3A%2F%2Fsubscriptions.example%2Fsub%2Fclient-token%3Fformat%3Dbase64&name=client%20token',
+        icon: '/logos/v2box.jpg'
+      },
+      {
+        label: 'v2rayNG Android',
+        href: 'v2rayng://install-sub?url=https%3A%2F%2Fsubscriptions.example%2Fsub%2Fclient-token%3Fformat%3Dbase64&name=client%20token',
+        icon: '/logos/v2rayng.png'
+      }
+    ]
+  );
 });
 
 test('checks optional basic admin auth', () => {
@@ -909,6 +975,20 @@ test('normalizes usage to one limit when one panel returns multiple links', () =
       }
     }
   ]);
+  const normalizedSummary = summarizeNormalizedUsage([
+    {
+      count: 2,
+      headers: {
+        'subscription-userinfo': 'upload=2048; download=2048; total=16384; expire=0'
+      }
+    },
+    {
+      count: 1,
+      headers: {
+        'subscription-userinfo': 'upload=1024; download=1024; total=8192; expire=0'
+      }
+    }
+  ]);
 
   assert.equal(usage.upload, 1024);
   assert.equal(usage.download, 1024);
@@ -918,6 +998,10 @@ test('normalizes usage to one limit when one panel returns multiple links', () =
   assert.equal(summary.download, 2048);
   assert.equal(summary.total, 16384);
   assert.equal(summary.remaining, 12288);
+  assert.equal(normalizedSummary.hasData, true);
+  assert.equal(normalizedSummary.used, 4096);
+  assert.equal(normalizedSummary.total, 8192);
+  assert.equal(normalizedSummary.remaining, 4096);
 });
 
 test('renders a local QR SVG', () => {
@@ -928,7 +1012,7 @@ test('renders a local QR SVG', () => {
   assert.match(svg, /Subscription QR code/);
 });
 
-test('renders subscription info page without external assets', () => {
+test('renders subscription info page with app links and copy targets', () => {
   const html = renderSubscriptionPage({
     token: 'client-token',
     subscriptionUrl: 'http://127.0.0.1:3000/sub/client-token',
@@ -962,8 +1046,18 @@ test('renders subscription info page without external assets', () => {
   assert.match(html, /QR code/);
   assert.match(html, /Last updated:/);
   assert.match(html, /Please update your subscription link daily/);
+  assert.match(html, /Aggregated Remaining/);
+  assert.match(html, /2\.00 KB/);
   assert.match(html, /http:\/\/127\.0\.0\.1:3000\/sub\/client-token/);
-  assert.doesNotMatch(html, /<script/i);
+  assert.match(html, /Streisand iOS/);
+  assert.match(html, /V2Box iOS/);
+  assert.match(html, /v2rayNG Android/);
+  assert.match(html, /\/logos\/streisand\.jpg/);
+  assert.match(html, /Tap the URL to copy it/);
+  assert.match(html, /data-copy-text="http:\/\/127\.0\.0\.1:3000\/sub\/client-token"/);
+  assert.match(html, /data-copy-text="vless:\/\/user@example\.com:443\?security=tls#example"/);
+  assert.match(html, /\/assets\/copy\.js/);
+  assert.doesNotMatch(html, /\/assets\/inbounds\.js/);
 });
 
 test('builds an xray local HTTP inbound with a VLESS WS TLS outbound', () => {

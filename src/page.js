@@ -1,5 +1,6 @@
 import { renderQrSvg } from './qr.js';
-import { formatBytes, formatExpiry, usageFromResult } from './usage.js';
+import { subscriptionAppLinks } from './app-links.js';
+import { formatBytes, formatExpiry, summarizeNormalizedUsage, usageFromResult } from './usage.js';
 
 function escapeHtml(value) {
   return String(value)
@@ -54,15 +55,59 @@ function sourceCard(result) {
   `;
 }
 
+function aggregateUsageCard(usage) {
+  if (!usage?.hasData) {
+    return `
+      <section class="aggregate-card">
+        <h2>Aggregated Remaining</h2>
+        <p>No complete usage data was returned for all upstream subscriptions.</p>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="aggregate-card">
+      <h2>Aggregated Remaining</h2>
+      <strong>${formatBytes(usage.remaining)}</strong>
+      <div class="meter" aria-label="Aggregated normalized usage">
+        <span style="width: ${percentage(usage.used, usage.total).toFixed(2)}%"></span>
+      </div>
+      <dl class="stats compact">
+        <div><dt>Normalized total</dt><dd>${formatBytes(usage.total)}</dd></div>
+        <div><dt>Normalized used</dt><dd>${formatBytes(usage.used)}</dd></div>
+      </dl>
+    </section>
+  `;
+}
+
 function subscriptionLinks(links) {
   if (links.length === 0) return '<p class="empty">No subscription links were returned.</p>';
 
   return links
     .map(
       (link) => `
-        <li>
+        <li
+          class="copy-box"
+          data-copy-text="${escapeHtml(link)}"
+          role="button"
+          tabindex="0"
+          aria-label="Copy aggregated link"
+        >
           <code>${escapeHtml(link)}</code>
         </li>
+      `
+    )
+    .join('');
+}
+
+function appLinkButtons(subscriptionUrl, name) {
+  return subscriptionAppLinks(subscriptionUrl, name)
+    .map(
+      (link) => `
+        <a class="app-link" href="${escapeHtml(link.href)}">
+          <img src="${escapeHtml(link.icon)}" alt="" aria-hidden="true">
+          <span>${escapeHtml(link.label)}</span>
+        </a>
       `
     )
     .join('');
@@ -74,9 +119,11 @@ export function renderSubscriptionPage({
   plainUrl,
   base64Url,
   result,
+  usageSummary = null,
   updatedAt = new Date()
 }) {
   const qrSvg = renderQrSvg(subscriptionUrl);
+  const aggregateUsage = usageSummary || summarizeNormalizedUsage(result.results);
   const updatedDate = updatedAt instanceof Date ? updatedAt : new Date(updatedAt);
   const updatedLabel = Number.isNaN(updatedDate.getTime())
     ? 'Unknown'
@@ -201,6 +248,7 @@ export function renderSubscriptionPage({
     }
 
     .qr-panel,
+    .aggregate-card,
     .source-card,
     .links-panel {
       border: 1px solid var(--line);
@@ -238,6 +286,59 @@ export function renderSubscriptionPage({
       overflow-wrap: anywhere;
     }
 
+    .copy-box {
+      cursor: pointer;
+    }
+
+    .copy-box:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .copy-box[data-copied="true"] {
+      border-color: rgba(45, 212, 191, 0.8);
+      color: #99f6e4;
+    }
+
+    .copy-hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .app-actions {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .app-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid rgba(45, 212, 191, 0.5);
+      border-radius: 8px;
+      color: #99f6e4;
+      background: rgba(20, 184, 166, 0.1);
+      text-align: center;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .app-link img {
+      width: 22px;
+      height: 22px;
+      flex: 0 0 22px;
+      border-radius: 6px;
+      object-fit: cover;
+    }
+
     .update-note {
       margin-top: 14px;
       padding: 12px;
@@ -267,6 +368,36 @@ export function renderSubscriptionPage({
 
     .source-card {
       overflow: hidden;
+    }
+
+    .aggregate-card {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 18px;
+      border-color: rgba(45, 212, 191, 0.55);
+    }
+
+    .aggregate-card h2 {
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    .aggregate-card p {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .aggregate-card strong {
+      color: #99f6e4;
+      font-size: 28px;
+      line-height: 1.1;
+    }
+
+    .aggregate-card .meter {
+      margin: 0;
     }
 
     .source-heading {
@@ -325,6 +456,10 @@ export function renderSubscriptionPage({
       gap: 14px;
       padding: 13px 18px;
       border-bottom: 1px solid var(--line);
+    }
+
+    .stats.compact {
+      margin-top: 0;
     }
 
     dt {
@@ -412,7 +547,17 @@ export function renderSubscriptionPage({
     <section class="grid">
       <aside class="qr-panel">
         <div class="qr-box">${qrSvg}</div>
-        <div class="url-box">${escapeHtml(subscriptionUrl)}</div>
+        <div
+          class="url-box copy-box"
+          data-copy-text="${escapeHtml(subscriptionUrl)}"
+          role="button"
+          tabindex="0"
+          aria-label="Copy subscription URL"
+        >${escapeHtml(subscriptionUrl)}</div>
+        <p class="copy-hint" data-copy-hint>Tap the URL to copy it.</p>
+        <nav class="app-actions" aria-label="Open subscription in app">
+          ${appLinkButtons(subscriptionUrl, token)}
+        </nav>
         <div class="update-note">
           <strong>Last updated: ${escapeHtml(updatedLabel)}</strong>
           <p>Please update your subscription link daily to keep configs and usage information current.</p>
@@ -420,6 +565,8 @@ export function renderSubscriptionPage({
       </aside>
 
       <div>
+        ${aggregateUsageCard(aggregateUsage)}
+
         <section class="sources">
           ${result.results.map(sourceCard).join('')}
         </section>
@@ -431,6 +578,7 @@ export function renderSubscriptionPage({
       </div>
     </section>
   </main>
+  <script src="/assets/copy.js" defer></script>
 </body>
 </html>`;
 }

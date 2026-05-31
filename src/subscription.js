@@ -1,3 +1,5 @@
+import { formatBytes } from './usage.js';
+
 const SUBSCRIPTION_LINK_PROTOCOLS = new Set([
   'vless',
   'vmess',
@@ -145,17 +147,31 @@ export function buildSubscriptionNoticeLink(updatedAt = new Date()) {
   return `ss://${userInfo}@127.0.0.1:1#${encodeURIComponent(label)}`;
 }
 
-export function buildSubscriptionNoticeLinks(updatedAt = new Date()) {
-  const dailyUpdateUserInfo = toBase64Url('aes-128-gcm:subscription-notice-daily-update');
+export function buildSubscriptionRemainingNoticeLink(usage) {
+  const userInfo = toBase64Url('aes-128-gcm:subscription-notice-remaining-usage');
+  const label = usage?.hasData
+    ? `باقیمانده کل: ${formatBytes(usage.remaining)}`
+    : 'باقیمانده کل: نامشخص';
 
-  return [
+  return `ss://${userInfo}@127.0.0.1:3#${encodeURIComponent(label)}`;
+}
+
+export function buildSubscriptionNoticeLinks(updatedAt = new Date(), usage = null) {
+  const dailyUpdateUserInfo = toBase64Url('aes-128-gcm:subscription-notice-daily-update');
+  const notices = [
     buildSubscriptionNoticeLink(updatedAt),
     `ss://${dailyUpdateUserInfo}@127.0.0.1:2#${encodeURIComponent('لینک اشتراک را روزانه بروزرسانی کنید')}`
   ];
+
+  if (usage) {
+    notices.push(buildSubscriptionRemainingNoticeLink(usage));
+  }
+
+  return notices;
 }
 
-export function withSubscriptionNotice(links, updatedAt = new Date()) {
-  return [...links, ...buildSubscriptionNoticeLinks(updatedAt)];
+export function withSubscriptionNotice(links, updatedAt = new Date(), usage = null) {
+  return [...links, ...buildSubscriptionNoticeLinks(updatedAt, usage)];
 }
 
 export function appendSubscriptionLinkNameSuffix(link, suffix) {

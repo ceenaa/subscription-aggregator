@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
 import {
@@ -14,13 +15,31 @@ import {
 import { sourcesForToken } from './source-url.js';
 import { createSubscriptionFetcher } from './runtime.js';
 import { renderSubscriptionPage } from './page.js';
-import { formatSubscriptionUserInfo, summarizeUsage } from './usage.js';
+import { formatSubscriptionUserInfo, summarizeNormalizedUsage } from './usage.js';
 import { buildResponseHeaders } from './response-headers.js';
 import { absoluteSubscriptionUrl, getRequestUrl } from './url-context.js';
 import { isAuthorized, isAdminAuthEnabled } from './auth.js';
 import { addClientToPanels, defaultInboundFormValues } from './panel-client.js';
 import { renderInboundsPage } from './inbounds-page.js';
-import { INBOUNDS_SCRIPT } from './assets.js';
+import { COPY_SCRIPT, INBOUNDS_SCRIPT } from './assets.js';
+
+const MODULE_PATH = fileURLToPath(import.meta.url);
+const PROJECT_ROOT = path.dirname(path.dirname(MODULE_PATH));
+
+const LOGO_ASSETS = {
+  '/logos/streisand.jpg': {
+    path: 'logos/streisand.jpg',
+    contentType: 'image/jpeg'
+  },
+  '/logos/v2box.jpg': {
+    path: 'logos/v2box.jpg',
+    contentType: 'image/jpeg'
+  },
+  '/logos/v2rayng.png': {
+    path: 'logos/v2rayng.png',
+    contentType: 'image/png'
+  }
+};
 
 function sendText(config, request, response, statusCode, body, headers = {}) {
   response.writeHead(
@@ -42,6 +61,14 @@ function sendJavaScript(config, request, response, statusCode, body, headers = {
   response.writeHead(
     statusCode,
     buildResponseHeaders(config, request, 'application/javascript; charset=utf-8', headers)
+  );
+  response.end(body);
+}
+
+function sendBinary(config, request, response, statusCode, body, contentType, headers = {}) {
+  response.writeHead(
+    statusCode,
+    buildResponseHeaders(config, request, contentType, headers)
   );
   response.end(body);
 }
@@ -173,6 +200,18 @@ export async function createServer(config = loadConfig()) {
         return;
       }
 
+      if (url.pathname === '/assets/copy.js') {
+        sendJavaScript(config, request, response, 200, COPY_SCRIPT);
+        return;
+      }
+
+      const logoAsset = LOGO_ASSETS[url.pathname];
+      if (logoAsset) {
+        const body = await readFile(path.join(PROJECT_ROOT, logoAsset.path));
+        sendBinary(config, request, response, 200, body, logoAsset.contentType);
+        return;
+      }
+
       if (url.pathname === '/inbounds') {
         if (!isAuthorized(config, request)) {
           sendUnauthorized(config, request, response);
@@ -259,13 +298,13 @@ export async function createServer(config = loadConfig()) {
       const result = await aggregateSubscriptions(sources, runtime.fetch);
       const updatedAt = new Date();
       const namedLinks = linksWithPanelRatioNames(result.results, config.panels);
-      const linksWithNotice = withSubscriptionNotice(namedLinks, updatedAt);
+      const usageSummary = summarizeNormalizedUsage(result.results);
+      const linksWithNotice = withSubscriptionNotice(namedLinks, updatedAt, usageSummary);
       const resultWithNotice = {
         ...result,
         links: linksWithNotice,
         encoded: encodeSubscriptionLinks(linksWithNotice)
       };
-      const usageSummary = summarizeUsage(result.results);
       const usageHeader = formatSubscriptionUserInfo(usageSummary);
 
       if (isPlainSubscription) {
@@ -288,6 +327,7 @@ export async function createServer(config = loadConfig()) {
             base64Url: `${subscriptionUrl}?format=base64`,
             plainUrl: `${url.origin}/sub/plain/${encodeURIComponent(token)}`,
             result: resultWithNotice,
+            usageSummary,
             updatedAt
           }),
           {
@@ -345,7 +385,7 @@ async function main() {
   process.once('SIGTERM', shutdown);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && MODULE_PATH === process.argv[1]) {
   main().catch((error) => {
     console.error(error.message);
     process.exit(1);
