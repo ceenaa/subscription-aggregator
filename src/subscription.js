@@ -76,8 +76,19 @@ function formatQuotaRatio(value) {
   return Number.isFinite(parsed) ? parsed.toString() : '1';
 }
 
+const USAGE_BADGE_PATTERN =
+  /(?:\s*[-–—|_]\s*)?\d+(?:[.,]\d+)?\s*(?:KiB|MiB|GiB|TiB|PiB|KB|MB|GB|TB|PB|B)\s*📊(?:\s*[-–—|_]\s*(?:\d+\s*D(?:\s*,\s*\d+\s*H)?|\d+\s*H)\s*⏳)?/giu;
+
+function stripPanelUsageBadge(label) {
+  return label
+    .replace(USAGE_BADGE_PATTERN, '')
+    .replace(/\s*[-–—|_]\s*$/u, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function appendLabelSuffix(label, suffix) {
-  const trimmedLabel = label.trim();
+  const trimmedLabel = stripPanelUsageBadge(label);
   return trimmedLabel ? `${trimmedLabel} - ${suffix}` : suffix;
 }
 
@@ -188,7 +199,7 @@ export function linksWithPanelRatioNames(results, panels = []) {
 
   results.forEach((result, index) => {
     const ratio = panels[index]?.totalGbRatio ?? result.source?.totalGbRatio ?? 1;
-    const suffix = `مصرف با ضریب ${formatQuotaRatio(ratio)}`;
+    const suffix = `⚖️ مصرف با ضریب ${formatQuotaRatio(ratio)}`;
 
     for (const link of result.links) {
       const namedLink = appendSubscriptionLinkNameSuffix(link, suffix);

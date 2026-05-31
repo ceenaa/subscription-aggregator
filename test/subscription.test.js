@@ -127,11 +127,11 @@ test('adds panel ratio text to aggregated subscription link names', () => {
     [
       {
         source: { name: 'first' },
-        links: ['vless://user1@example.com:443?security=tls#first-node']
+        links: ['vless://user1@example.com:443?security=tls#first-node-4.96GB📊-29D,21H⏳']
       },
       {
         source: { name: 'second' },
-        links: ['trojan://user2@example.com:443?security=tls#second-node']
+        links: ['trojan://user2@example.com:443?security=tls#second-node-1.25GB📊']
       }
     ],
     [{ totalGbRatio: 1 }, { totalGbRatio: 2.5 }]
@@ -139,18 +139,18 @@ test('adds panel ratio text to aggregated subscription link names', () => {
 
   assert.equal(
     decodeURIComponent(namedLinks[0].split('#')[1]),
-    'first-node - مصرف با ضریب 1'
+    'first-node - ⚖️ مصرف با ضریب 1'
   );
   assert.equal(
     decodeURIComponent(namedLinks[1].split('#')[1]),
-    'second-node - مصرف با ضریب 2.5'
+    'second-node - ⚖️ مصرف با ضریب 2.5'
   );
 });
 
 test('adds panel ratio text to vmess ps names', () => {
   const vmessConfig = {
     v: '2',
-    ps: 'vmess-node',
+    ps: 'vmess-node-512MB📊-8H⏳',
     add: 'example.com',
     port: '443',
     id: '11111111-1111-4111-8111-111111111111',
@@ -168,7 +168,7 @@ test('adds panel ratio text to vmess ps names', () => {
   );
   const namedConfig = JSON.parse(Buffer.from(namedLink.slice('vmess://'.length), 'base64').toString('utf8'));
 
-  assert.equal(namedConfig.ps, 'vmess-node - مصرف با ضریب 3');
+  assert.equal(namedConfig.ps, 'vmess-node - ⚖️ مصرف با ضریب 3');
 });
 
 test('parses .env values with quotes', () => {
