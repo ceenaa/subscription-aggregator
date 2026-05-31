@@ -105,20 +105,20 @@ export function normalizeCombinedUsage(entries) {
     };
   }
 
-  const lower = normalizedEntries.reduce(
-    (lowest, entry) => (entry.total < lowest.total ? entry : lowest),
+  const higher = normalizedEntries.reduce(
+    (highest, entry) => (entry.total > highest.total ? entry : highest),
     normalizedEntries[0]
   );
-  const scales = normalizedEntries.map((entry) => entry.total / lower.total);
+  const scales = normalizedEntries.map((entry) => higher.total / entry.total);
   const used = normalizedEntries.reduce(
-    (sum, entry, index) => sum + entry.used / scales[index],
+    (sum, entry, index) => sum + entry.used * scales[index],
     0
   );
 
   return {
-    total: lower.total,
+    total: higher.total,
     used,
-    remaining: Math.max(lower.total - used, 0),
+    remaining: Math.max(higher.total - used, 0),
     scale: Math.max(...scales),
     scales,
     hasData: true

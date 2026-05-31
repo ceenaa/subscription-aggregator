@@ -38,14 +38,14 @@ The worker only evaluates matched clients that are active on at least one panel.
 A matched client is disabled on every configured panel when any quota check is true:
 
 - any panel total is nonzero and `allTime >= total`
-- all panel totals are nonzero and normalized combined usage is at or over the lower quota
+- all panel totals are nonzero and normalized combined usage is at or over the highest quota
 
-For the combined check, the worker scales higher-quota panels down into the lower-quota panel's units:
+For the combined check, the worker scales lower-quota panels up into the highest-quota panel's units:
 
 ```text
-scale = panelTotal / lowerTotal
-normalizedUsed = sum(panelUsed / scale)
-disable when normalizedUsed >= lowerTotal
+scale = higherTotal / panelTotal
+normalizedUsed = sum(panelUsed * scale)
+disable when normalizedUsed >= higherTotal
 ```
 
 At the end, it logs the checked count, fully disabled clients, partially disabled clients, and skipped clients. A partial disable means at least one panel was updated but another active panel could not be updated, so the next run can retry the failed side. The update request preserves the client settings returned by 3x-ui and only changes `enable` to `false`.

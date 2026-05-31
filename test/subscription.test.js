@@ -478,7 +478,7 @@ test('indexes inbound clients and evaluates ratio quota conditions', () => {
   assert.equal(evaluateQuotaPair(unlimitedFirst, second).exceeded, false);
 });
 
-test('normalizes combined used traffic to the lower quota', () => {
+test('normalizes combined used traffic to the higher quota', () => {
   const gib = 1024 ** 3;
   const first = {
     panel: { name: 'first-panel' },
@@ -494,12 +494,12 @@ test('normalizes combined used traffic to the lower quota', () => {
   const combined = normalizeCombinedUsage([first, second]);
 
   assert.equal(evaluation.exceeded, true);
-  assert.equal(evaluation.combinedTotal, 5 * gib);
-  assert.equal(evaluation.combinedAllTime, 5 * gib);
+  assert.equal(evaluation.combinedTotal, 10 * gib);
+  assert.equal(evaluation.combinedAllTime, 10 * gib);
   assert.equal(evaluation.combinedScale, 2);
   assert.deepEqual(evaluation.reasons, ['combined normalized quota exceeded']);
-  assert.equal(combined.total, 5 * gib);
-  assert.equal(combined.used, 5 * gib);
+  assert.equal(combined.total, 10 * gib);
+  assert.equal(combined.used, 10 * gib);
   assert.equal(combined.remaining, 0);
   assert.equal(combined.scale, 2);
 });
