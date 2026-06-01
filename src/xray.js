@@ -141,6 +141,24 @@ export function buildXrayConfigFromVlessLink(vlessLink, localHttpPort) {
     streamSettings.tlsSettings = tlsSettings;
   }
 
+  if (security === 'reality') {
+    const realitySettings = {
+      serverName: params.get('sni') || params.get('host') || address,
+      publicKey: params.get('pbk') || ''
+    };
+
+    const fingerprint = params.get('fp');
+    if (fingerprint) realitySettings.fingerprint = fingerprint;
+
+    const shortId = params.get('sid');
+    if (shortId) realitySettings.shortId = shortId;
+
+    const spiderX = params.get('spx');
+    if (spiderX) realitySettings.spiderX = spiderX;
+
+    streamSettings.realitySettings = realitySettings;
+  }
+
   if (network === 'ws') {
     const wsSettings = {
       path: params.get('path') || '/'
@@ -183,7 +201,8 @@ export function buildXrayConfigFromVlessLink(vlessLink, localHttpPort) {
               users: [
                 {
                   id: decodeURIComponent(url.username),
-                  encryption
+                  encryption,
+                  ...(params.get('flow') ? { flow: params.get('flow') } : {})
                 }
               ]
             }

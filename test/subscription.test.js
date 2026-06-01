@@ -1081,3 +1081,23 @@ test('builds an xray local HTTP inbound with a VLESS WS TLS outbound', () => {
   assert.deepEqual(config.outbounds[0].streamSettings.tlsSettings.alpn, ['h2', 'http/1.1']);
   assert.equal(config.outbounds[0].streamSettings.tlsSettings.fingerprint, 'chrome');
 });
+
+test('builds an xray VLESS TCP REALITY outbound', () => {
+  const config = buildXrayConfigFromVlessLink(
+    'vless://11111111-1111-4111-8111-111111111111@reality.example:443?encryption=none&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&security=reality&sid=abcdef&sni=www.example.com&spx=%2Fspider&type=tcp#test-reality',
+    10808
+  );
+
+  assert.equal(config.outbounds[0].settings.vnext[0].address, 'reality.example');
+  assert.equal(config.outbounds[0].settings.vnext[0].port, 443);
+  assert.equal(config.outbounds[0].streamSettings.network, 'tcp');
+  assert.equal(config.outbounds[0].streamSettings.security, 'reality');
+  assert.equal(config.outbounds[0].streamSettings.realitySettings.serverName, 'www.example.com');
+  assert.equal(
+    config.outbounds[0].streamSettings.realitySettings.publicKey,
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  );
+  assert.equal(config.outbounds[0].streamSettings.realitySettings.shortId, 'abcdef');
+  assert.equal(config.outbounds[0].streamSettings.realitySettings.spiderX, '/spider');
+  assert.equal(config.outbounds[0].streamSettings.realitySettings.fingerprint, 'chrome');
+});
