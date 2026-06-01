@@ -641,7 +641,7 @@ test('lists only clients present in every configured panel inbound', async () =>
     clientStats: [
       {
         subId: 'shared-sub',
-        enable: true,
+        enable: false,
         allTime: 99 * gib,
         up: 1 * gib,
         down: 7 * gib,
@@ -661,7 +661,7 @@ test('lists only clients present in every configured panel inbound', async () =>
     clientStats: [
       {
         subId: 'shared-sub',
-        enable: true,
+        enable: false,
         allTime: 2 * gib,
         up: 0.25 * gib,
         down: 0.25 * gib,
@@ -716,6 +716,8 @@ test('lists only clients present in every configured panel inbound', async () =>
 
   assert.equal(result.clients.length, 1);
   assert.equal(result.clients[0].subId, 'shared-sub');
+  assert.equal(result.clients[0].status, 'Active');
+  assert.equal(result.clients[0].enabledPanels, 2);
   assert.equal(result.clients[0].usage.total, 10 * gib);
   assert.equal(result.clients[0].usage.used, 3 * gib);
   assert.equal(result.clients[0].usage.remaining, 7 * gib);
@@ -1140,7 +1142,7 @@ test('quota worker retries Xray disables and skips direct panels after Xray fail
   assert.equal(result.skipped.some((item) => item.panel === 'direct-panel' && item.reason.includes('skipped after Xray failure')), true);
 });
 
-test('quota worker treats clientStats enable as authoritative', async () => {
+test('quota worker treats client settings enable as authoritative', async () => {
   const gib = 1024 ** 3;
   const panels = [
     {
@@ -1201,11 +1203,12 @@ test('quota worker treats clientStats enable as authoritative', async () => {
     logger: { log() {} }
   });
 
-  assert.equal(result.checked, 0);
-  assert.equal(result.disabled.length, 0);
+  assert.equal(result.checked, 1);
+  assert.equal(result.disabled.length, 1);
   assert.equal(result.partialDisabled.length, 0);
-  assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), true);
-  assert.equal(requests.filter((request) => request.options.method === 'POST').length, 0);
+  assert.equal(result.disabled[0].subId, 'disabled-sub');
+  assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), false);
+  assert.equal(requests.filter((request) => request.options.method === 'POST').length, 2);
 });
 
 test('quota worker logs partial disabled when only one panel update succeeds', async () => {

@@ -96,11 +96,11 @@ function isEnabledValue(value) {
 }
 
 export function clientLooksEnabled(entry) {
-  if (entry.stat && entry.stat.enable !== undefined) {
-    return isEnabledValue(entry.stat.enable);
+  if (entry.client && entry.client.enable !== undefined) {
+    return isEnabledValue(entry.client.enable);
   }
 
-  return isEnabledValue(entry.client.enable);
+  return isEnabledValue(entry.stat?.enable);
 }
 
 function formatPanelList(names) {
