@@ -561,6 +561,32 @@ test('normalizes combined used traffic to the higher quota', () => {
   assert.equal(combined.scale, 2);
 });
 
+test('quota evaluation prefers current upload and download over allTime', () => {
+  const gib = 1024 ** 3;
+  const first = {
+    panel: { name: 'first-panel' },
+    total: 5 * gib,
+    upload: 128 * 1024 ** 2,
+    download: 128 * 1024 ** 2,
+    hasCurrentUsage: true,
+    allTime: 50 * gib
+  };
+  const second = {
+    panel: { name: 'second-panel' },
+    total: 5 * gib,
+    upload: 64 * 1024 ** 2,
+    download: 64 * 1024 ** 2,
+    hasCurrentUsage: true,
+    allTime: 50 * gib
+  };
+  const evaluation = evaluateQuotaPair(first, second);
+
+  assert.equal(evaluation.exceeded, false);
+  assert.equal(evaluation.combinedTotal, 5 * gib);
+  assert.equal(evaluation.combinedAllTime, 384 * 1024 ** 2);
+  assert.deepEqual(evaluation.reasons, []);
+});
+
 test('uses one quota divisor rule for subscription summaries and worker entries', () => {
   const gib = 1024 ** 3;
   const mib = 1024 ** 2;

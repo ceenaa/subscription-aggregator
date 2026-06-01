@@ -204,17 +204,28 @@ export function indexInboundClients(panel, inbound) {
   return clients;
 }
 
+function currentUsageEntry(entry) {
+  if (!entry.hasCurrentUsage) return entry;
+
+  return {
+    ...entry,
+    allTime: undefined,
+    used: entry.upload + entry.download
+  };
+}
+
 export function evaluateQuotaGroup(entries) {
+  const currentEntries = entries.map(currentUsageEntry);
   const reasons = [];
 
-  for (const entry of entries) {
+  for (const entry of currentEntries) {
     const usage = normalizeQuotaUsage(entry);
     if (usage.total > 0 && usage.used >= usage.total) {
       reasons.push(`${entry.panel.name} quota exceeded`);
     }
   }
 
-  const combined = normalizeCombinedUsage(entries);
+  const combined = normalizeCombinedUsage(currentEntries);
 
   if (combined.total > 0 && combined.used >= combined.total) {
     reasons.push('combined normalized quota exceeded');
