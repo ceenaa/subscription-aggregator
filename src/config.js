@@ -66,18 +66,23 @@ function hasPanelConfig(env, prefix) {
     'COOKIE',
     'INBOUND_ID',
     'PROXY',
-    'TOTAL_GB_RATIO'
+    'TOTAL_GB_RATIO',
+    'QUOTA_DIVISOR',
+    'CONFIG_COUNT'
   ].some((field) => env[`${prefix}_PANEL_${field}`] !== undefined);
 }
 
 function readPanelConfig(env, prefix, defaults) {
+  const configCount = readOptionalNumberEnv(env, `${prefix}_PANEL_CONFIG_COUNT`, 1);
+
   return {
     name: env[`${prefix}_PANEL_NAME`] || defaults.name,
     addClientUrl: env[`${prefix}_PANEL_ADD_CLIENT_URL`] || '',
     cookie: env[`${prefix}_PANEL_COOKIE`] || '',
     inboundId: env[`${prefix}_PANEL_INBOUND_ID`] || '',
     proxy: env[`${prefix}_PANEL_PROXY`] || defaults.proxy,
-    totalGbRatio: readOptionalNumberEnv(env, `${prefix}_PANEL_TOTAL_GB_RATIO`, 1)
+    totalGbRatio: readOptionalNumberEnv(env, `${prefix}_PANEL_TOTAL_GB_RATIO`, 1),
+    quotaDivisor: readOptionalNumberEnv(env, `${prefix}_PANEL_QUOTA_DIVISOR`, configCount)
   };
 }
 

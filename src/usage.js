@@ -36,24 +36,34 @@ export function parseSubscriptionUserInfo(value) {
   };
 }
 
-function normalizeQuotaByLinkCount(usage, linkCount) {
-  const count = Number.parseInt(linkCount, 10);
-  if (!usage.hasData || !Number.isFinite(count) || count <= 1) return usage;
+function quotaDivisor(value) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 1 ? parsed : 1;
+}
 
-  const total = Math.round(usage.total / count);
+export function normalizeQuotaUsage(usage, options = {}) {
+  const divisor = quotaDivisor(
+    options.quotaDivisor ?? usage.quotaDivisor ?? usage.configCount ?? usage.count
+  );
+  const total = Math.round(numberOrZero(usage.total) / divisor);
+  const used = numberOrZero(
+    usage.allTime ?? usage.used ?? numberOrZero(usage.upload) + numberOrZero(usage.download)
+  );
+
+  if (usage.hasData === false) return usage;
 
   return {
     ...usage,
+    used,
     total,
-    remaining: total > 0 ? Math.max(total - usage.used, 0) : 0
+    remaining: total > 0 ? Math.max(total - used, 0) : 0
   };
 }
 
 export function usageFromResult(result) {
-  return normalizeQuotaByLinkCount(
-    parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']),
-    result.count
-  );
+  return normalizeQuotaUsage(parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']), {
+    quotaDivisor: result.count
+  });
 }
 
 export function summarizeUsage(results) {
@@ -80,10 +90,7 @@ export function summarizeUsage(results) {
 }
 
 export function normalizeCombinedUsage(entries) {
-  const normalizedEntries = entries.map((entry) => ({
-    total: numberOrZero(entry.total),
-    used: numberOrZero(entry.allTime ?? entry.used)
-  }));
+  const normalizedEntries = entries.map((entry) => normalizeQuotaUsage(entry));
 
   if (
     normalizedEntries.length === 0 ||

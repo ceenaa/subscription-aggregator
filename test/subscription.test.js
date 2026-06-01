@@ -20,6 +20,7 @@ import { subscriptionAppLinks } from '../src/app-links.js';
 import {
   formatBytes,
   normalizeCombinedUsage,
+  normalizeQuotaUsage,
   parseSubscriptionUserInfo,
   summarizeNormalizedUsage,
   summarizeUsage,
@@ -436,7 +437,7 @@ test('builds 3x-ui list and update requests for the quota worker', () => {
 });
 
 test('indexes inbound clients and evaluates ratio quota conditions', () => {
-  const panel = { name: 'first-panel' };
+  const panel = { name: 'first-panel', quotaDivisor: 2 };
   const inbound = {
     id: 4,
     settings: JSON.stringify({
@@ -474,6 +475,7 @@ test('indexes inbound clients and evaluates ratio quota conditions', () => {
 
   assert.equal(clients.size, 1);
   assert.equal(first.email, 'client@example.com');
+  assert.equal(first.quotaDivisor, 2);
   assert.equal(evaluateQuotaPair(first, second).exceeded, true);
   assert.equal(evaluateQuotaPair(unlimitedFirst, second).exceeded, false);
 });
@@ -502,6 +504,43 @@ test('normalizes combined used traffic to the higher quota', () => {
   assert.equal(combined.used, 10 * gib);
   assert.equal(combined.remaining, 0);
   assert.equal(combined.scale, 2);
+});
+
+test('uses one quota divisor rule for subscription summaries and worker entries', () => {
+  const gib = 1024 ** 3;
+  const mib = 1024 ** 2;
+  const cdnUsage = {
+    total: 20 * gib,
+    upload: 206.77 * mib,
+    download: 8.78 * gib,
+    quotaDivisor: 2
+  };
+  const secondUsage = {
+    total: 5 * gib,
+    used: 578.32 * mib
+  };
+  const normalizedCdnUsage = normalizeQuotaUsage(cdnUsage);
+  const combined = normalizeCombinedUsage([cdnUsage, secondUsage]);
+  const evaluation = evaluateQuotaPair(
+    {
+      panel: { name: 'cdn1' },
+      total: 20 * gib,
+      allTime: normalizedCdnUsage.used,
+      quotaDivisor: 2
+    },
+    {
+      panel: { name: 'second-panel' },
+      total: 5 * gib,
+      allTime: secondUsage.used
+    }
+  );
+
+  assert.equal(normalizedCdnUsage.total, 10 * gib);
+  assert.equal(formatBytes(normalizedCdnUsage.used), '8.98 GB');
+  assert.equal(formatBytes(combined.total), '10.00 GB');
+  assert.equal(formatBytes(combined.used), '10.11 GB');
+  assert.equal(combined.remaining, 0);
+  assert.deepEqual(evaluation.reasons, ['combined normalized quota exceeded']);
 });
 
 test('quota worker skips fully disabled groups and disables active groups on every panel', async () => {
@@ -886,11 +925,13 @@ test('checks optional basic admin auth', () => {
       ADMIN_USERNAME: 'admin',
       ADMIN_PASSWORD: 'secret',
       FIRST_PANEL_TOTAL_GB_RATIO: '1.5',
+      FIRST_PANEL_QUOTA_DIVISOR: '2',
       SECOND_PANEL_TOTAL_GB_RATIO: '2',
       THIRD_PANEL_NAME: 'third-panel',
       THIRD_PANEL_ADD_CLIENT_URL: 'https://third-panel.example/secret/panel/api/inbounds/addClient',
       THIRD_PANEL_INBOUND_ID: '6',
-      THIRD_PANEL_TOTAL_GB_RATIO: '3'
+      THIRD_PANEL_TOTAL_GB_RATIO: '3',
+      THIRD_PANEL_CONFIG_COUNT: '4'
     })
   );
 
@@ -898,10 +939,13 @@ test('checks optional basic admin auth', () => {
   assert.equal(isAuthorized(config, { headers: { authorization: header } }), true);
   assert.equal(isAuthorized(config, { headers: { authorization: 'Basic bad' } }), false);
   assert.equal(config.panels[0].totalGbRatio, 1.5);
+  assert.equal(config.panels[0].quotaDivisor, 2);
   assert.equal(config.panels[1].totalGbRatio, 2);
+  assert.equal(config.panels[1].quotaDivisor, 1);
   assert.equal(config.panels[2].name, 'third-panel');
   assert.equal(config.panels[2].inboundId, '6');
   assert.equal(config.panels[2].totalGbRatio, 3);
+  assert.equal(config.panels[2].quotaDivisor, 4);
 });
 
 test('builds source URLs from base URLs and a route token', () => {

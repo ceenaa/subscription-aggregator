@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
 import { createSubscriptionFetcher } from './runtime.js';
-import { normalizeCombinedUsage } from './usage.js';
+import { normalizeCombinedUsage, normalizeQuotaUsage } from './usage.js';
 
 function requirePanelField(panel, field) {
   if (!panel[field]) {
@@ -189,7 +189,8 @@ export function indexInboundClients(panel, inbound) {
       subId,
       email: client.email || stat?.email || '',
       total: numberOrZero(stat?.total ?? client.totalGB),
-      allTime: numberOrZero(stat?.allTime)
+      allTime: numberOrZero(stat?.allTime),
+      quotaDivisor: numberOrZero(panel.quotaDivisor) || 1
     });
   }
 
@@ -200,7 +201,8 @@ export function evaluateQuotaGroup(entries) {
   const reasons = [];
 
   for (const entry of entries) {
-    if (entry.total > 0 && entry.allTime >= entry.total) {
+    const usage = normalizeQuotaUsage(entry);
+    if (usage.total > 0 && usage.used >= usage.total) {
       reasons.push(`${entry.panel.name} quota exceeded`);
     }
   }
