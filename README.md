@@ -228,5 +228,5 @@ THIRD_PANEL_COOKIE='3x-ui=...; lang=en-US'
 - Only the first source uses Xray. The second source always uses a direct HTTPS request.
 - For troubleshooting, run `FIRST_SUBSCRIPTION_PROXY=direct npm run print:plain -- YOUR_TOKEN` to verify the first subscription URL without Xray.
 - Browser requests to `/sub/YOUR_TOKEN` show a local info page with a QR code, source usage, remaining quota, and merged links.
-- If one upstream panel returns multiple config links for the same subscription, usage and remaining quota are normalized to one link's limit for that panel instead of counting every returned config as extra quota.
+- If one upstream panel returns multiple config links for the same subscription, the displayed total quota is divided by the link count, while uploaded/downloaded usage stays as reported by the upstream.
 - Output is a normal V2Ray subscription format: base64 of newline-separated links.

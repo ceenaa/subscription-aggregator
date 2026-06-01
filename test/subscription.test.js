@@ -954,7 +954,7 @@ test('parses subscription usage headers', () => {
   assert.equal(formatBytes(usage.remaining), '4.00 KB');
 });
 
-test('normalizes usage to one limit when one panel returns multiple links', () => {
+test('normalizes only the quota when one panel returns multiple links', () => {
   const usage = usageFromResult({
     count: 2,
     headers: {
@@ -990,18 +990,20 @@ test('normalizes usage to one limit when one panel returns multiple links', () =
     }
   ]);
 
-  assert.equal(usage.upload, 1024);
-  assert.equal(usage.download, 1024);
+  assert.equal(usage.upload, 2048);
+  assert.equal(usage.download, 2048);
+  assert.equal(usage.used, 4096);
   assert.equal(usage.total, 8192);
-  assert.equal(usage.remaining, 6144);
-  assert.equal(summary.upload, 2048);
-  assert.equal(summary.download, 2048);
+  assert.equal(usage.remaining, 4096);
+  assert.equal(summary.upload, 3072);
+  assert.equal(summary.download, 3072);
+  assert.equal(summary.used, 6144);
   assert.equal(summary.total, 16384);
-  assert.equal(summary.remaining, 12288);
+  assert.equal(summary.remaining, 10240);
   assert.equal(normalizedSummary.hasData, true);
-  assert.equal(normalizedSummary.used, 4096);
+  assert.equal(normalizedSummary.used, 6144);
   assert.equal(normalizedSummary.total, 8192);
-  assert.equal(normalizedSummary.remaining, 4096);
+  assert.equal(normalizedSummary.remaining, 2048);
 });
 
 test('renders a local QR SVG', () => {
