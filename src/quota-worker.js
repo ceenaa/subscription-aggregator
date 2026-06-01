@@ -3,6 +3,7 @@ import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
 import { createSubscriptionFetcher } from './runtime.js';
 import { normalizeCombinedUsage, normalizeQuotaUsage } from './usage.js';
+import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 
 function requirePanelField(panel, field) {
   if (!panel[field]) {
@@ -94,7 +95,7 @@ function isEnabledValue(value) {
   return value !== false && value !== 0 && value !== 'false';
 }
 
-function clientLooksEnabled(entry) {
+export function clientLooksEnabled(entry) {
   if (entry.stat && entry.stat.enable !== undefined) {
     return isEnabledValue(entry.stat.enable);
   }
@@ -134,7 +135,7 @@ export function buildListInboundsRequest(panel) {
   };
 }
 
-export function buildUpdateClientRequest(panel, inbound, client, stat = null) {
+export function buildUpdateClientRequest(panel, inbound, client, stat = null, updates = { enable: false }) {
   const clientId = updateClientId(client, stat);
   if (!clientId) {
     throw new Error(`${panel.name} client ${client.email || client.subId || 'unknown'} is missing an update id`);
@@ -148,7 +149,7 @@ export function buildUpdateClientRequest(panel, inbound, client, stat = null) {
         clients: [
           {
             ...client,
-            enable: false
+            ...updates
           }
         ]
       },
@@ -181,6 +182,9 @@ export function indexInboundClients(panel, inbound) {
 
     const subId = String(client.subId);
     const stat = statsBySubId.get(subId);
+    const hasCurrentUsage = stat && ('up' in stat || 'down' in stat);
+    const upload = numberOrZero(stat?.up);
+    const download = numberOrZero(stat?.down);
     clients.set(subId, {
       panel,
       inbound,
@@ -189,7 +193,10 @@ export function indexInboundClients(panel, inbound) {
       subId,
       email: client.email || stat?.email || '',
       total: numberOrZero(stat?.total ?? client.totalGB),
-      allTime: numberOrZero(stat?.allTime),
+      upload,
+      download,
+      hasCurrentUsage,
+      allTime: numberOrZero(stat?.allTime ?? upload + download),
       quotaDivisor: numberOrZero(panel.quotaDivisor) || 1
     });
   }
@@ -244,7 +251,7 @@ async function requestPanelJson(runtime, panel, request) {
   return parseJsonObject(response.body, panel.name);
 }
 
-async function fetchPanelInbound(runtime, panel) {
+export async function fetchPanelInbound(runtime, panel) {
   const request = buildListInboundsRequest(panel);
   const payload = await requestPanelJson(runtime, panel, request);
   const inbounds = Array.isArray(payload.obj) ? payload.obj : [];
@@ -277,41 +284,46 @@ async function processQuotaGroup(runtime, group, options) {
   if (!evaluation.exceeded) return { disabled: null, partialDisabled: null, skipped };
 
   const targets = entries.filter(clientLooksEnabled);
-  const updates = await Promise.all(
-    targets.map(async (target) => {
+  const updates = await runPanelMutationsXrayFirst(
+    targets,
+    async (target) => {
       if (!updateClientId(target.client, target.stat)) {
-        return {
-          skipped: {
-            subId: target.subId,
-            email: target.email,
-            panel: target.panel.name,
-            reason: 'client update id missing'
-          }
-        };
+        throw new Error('client update id missing');
       }
 
-      try {
-        return {
-          update: dryRun
-            ? {
-                panel: target.panel.name,
-                subId: target.subId,
-                email: target.email,
-                response: 'dry run'
-              }
-            : await disableClient(runtime, target)
-        };
-      } catch (error) {
-        return {
-          skipped: {
-            subId: target.subId,
-            email: target.email,
-            panel: target.panel.name,
-            reason: `disable failed: ${error.message}`
-          }
-        };
-      }
-    })
+      return {
+        update: dryRun
+          ? {
+              panel: target.panel.name,
+              subId: target.subId,
+              email: target.email,
+              response: 'dry run'
+            }
+          : await disableClient(runtime, target)
+      };
+    },
+    {
+      panelFor: (target) => target.panel,
+      onError: (target, error) => ({
+        skipped: {
+          subId: target.subId,
+          email: target.email,
+          panel: target.panel.name,
+          reason:
+            error.message === 'client update id missing'
+              ? 'client update id missing'
+              : `disable failed: ${error.message}`
+        }
+      }),
+      onSkipped: (target, error) => ({
+        skipped: {
+          subId: target.subId,
+          email: target.email,
+          panel: target.panel.name,
+          reason: `skipped after Xray failure: ${error.message}`
+        }
+      })
+    }
   );
   const panelUpdates = [];
 

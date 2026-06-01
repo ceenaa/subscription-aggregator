@@ -16,7 +16,9 @@ import { buildSourceUrl, sourcesForToken } from '../src/source-url.js';
 import { renderQrSvg } from '../src/qr.js';
 import { renderSubscriptionPage } from '../src/page.js';
 import { renderInboundsPage } from '../src/inbounds-page.js';
+import { renderClientsPage } from '../src/clients-page.js';
 import { subscriptionAppLinks } from '../src/app-links.js';
+import { listCreatedPanelClients, updateCreatedPanelClient } from '../src/panel-clients.js';
 import {
   formatBytes,
   normalizeCombinedUsage,
@@ -405,6 +407,59 @@ test('adds email suffixes when creating clients on duplicate panel URLs', async 
   assert.equal(input.email, 'client@example.com');
 });
 
+test('creates clients through Xray panels before direct panels and skips direct after Xray failure', async () => {
+  const input = {
+    clientId: '11111111-1111-4111-8111-111111111111',
+    email: 'client@example.com',
+    subId: 'clienttoken123',
+    totalGB: '5',
+    durationDays: '0',
+    enable: 'true',
+    startAfterFirstUse: 'false',
+    comment: ''
+  };
+  const panels = [
+    {
+      name: 'xray-panel',
+      addClientUrl: 'https://xray-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'xray',
+      totalGbRatio: 1
+    },
+    {
+      name: 'direct-panel',
+      addClientUrl: 'https://direct-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '6',
+      proxy: 'direct',
+      totalGbRatio: 1
+    }
+  ];
+  const requests = [];
+  const runtime = {
+    async request(target) {
+      requests.push(target.name);
+      if (target.name === 'xray-panel') {
+        throw new Error('xray unavailable');
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, obj: null })
+      };
+    }
+  };
+
+  const results = await addClientToPanels(runtime, panels, input);
+
+  assert.deepEqual(requests, ['xray-panel', 'xray-panel', 'xray-panel', 'xray-panel']);
+  assert.equal(results[0].ok, false);
+  assert.match(results[0].error, /xray unavailable after 4 attempts/);
+  assert.equal(results[1].ok, false);
+  assert.equal(results[1].skipped, true);
+  assert.match(results[1].error, /skipped after Xray failure/);
+});
+
 test('builds 3x-ui list and update requests for the quota worker', () => {
   const panel = {
     name: 'first-panel',
@@ -543,6 +598,340 @@ test('uses one quota divisor rule for subscription summaries and worker entries'
   assert.deepEqual(evaluation.reasons, ['combined normalized quota exceeded']);
 });
 
+test('lists only clients present in every configured panel inbound', async () => {
+  const gib = 1024 ** 3;
+  const firstPanel = {
+    name: 'cdn1',
+    addClientUrl: 'https://cdn1.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'xray',
+    quotaDivisor: 2
+  };
+  const secondPanel = {
+    name: 'second-panel',
+    addClientUrl: 'https://second.example/secret/panel/api/inbounds/addClient',
+    inboundId: '8',
+    proxy: 'direct',
+    quotaDivisor: 1
+  };
+  const sharedFirstClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'shared',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 20 * gib
+  };
+  const firstOnlyClient = {
+    id: '22222222-2222-4222-8222-222222222222',
+    email: 'first-only',
+    subId: 'first-only-sub',
+    enable: true,
+    totalGB: 20 * gib
+  };
+  const sharedSecondClient = {
+    id: '33333333-3333-4333-8333-333333333333',
+    email: 'shared',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 5 * gib
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [sharedFirstClient, firstOnlyClient] }),
+    clientStats: [
+      {
+        subId: 'shared-sub',
+        enable: true,
+        allTime: 99 * gib,
+        up: 1 * gib,
+        down: 7 * gib,
+        total: 20 * gib
+      },
+      {
+        subId: 'first-only-sub',
+        enable: true,
+        allTime: 3 * gib,
+        total: 20 * gib
+      }
+    ]
+  };
+  const secondInbound = {
+    id: 8,
+    settings: JSON.stringify({ clients: [sharedSecondClient] }),
+    clientStats: [
+      {
+        subId: 'shared-sub',
+        enable: true,
+        allTime: 2 * gib,
+        up: 0.25 * gib,
+        down: 0.25 * gib,
+        total: 5 * gib
+      }
+    ]
+  };
+  const runtime = {
+    async request(target) {
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          obj: target.name === 'cdn1' ? [firstInbound] : [secondInbound]
+        })
+      };
+    },
+    async fetch(source) {
+      const firstLink = 'vless://11111111-1111-4111-8111-111111111111@example.com:443#one';
+      const secondLink = 'vless://22222222-2222-4222-8222-222222222222@example.com:443#two';
+      const isFirst = source.name === 'wcloud';
+
+      return {
+        statusCode: 200,
+        headers: {
+          'subscription-userinfo': isFirst
+            ? `upload=${1 * gib}; download=${1 * gib}; total=${20 * gib}; expire=0`
+            : `upload=${0.25 * gib}; download=${0.25 * gib}; total=${5 * gib}; expire=0`
+        },
+        body: isFirst ? `${firstLink}\n${secondLink}\n` : `${firstLink}\n`
+      };
+    }
+  };
+
+  const result = await listCreatedPanelClients(runtime, [firstPanel, secondPanel], {
+    sources: [
+      { name: 'wcloud', baseUrl: 'https://wcloud.example/sub', proxy: 'xray' },
+      { name: 'nimcloud', baseUrl: 'https://nimcloud.example/sub', proxy: 'direct' }
+    ],
+    concurrency: 2
+  });
+  const clientsWithUrls = result.clients.map((client) => ({
+    ...client,
+    subscriptionUrl: `https://subscriptions.example/sub/${client.subId}`
+  }));
+  const html = renderClientsPage({
+    panels: result.panels,
+    clients: clientsWithUrls,
+    updatedAt: new Date('2026-06-02T10:00:00Z')
+  });
+
+  assert.equal(result.clients.length, 1);
+  assert.equal(result.clients[0].subId, 'shared-sub');
+  assert.equal(result.clients[0].usage.total, 10 * gib);
+  assert.equal(result.clients[0].usage.used, 3 * gib);
+  assert.equal(result.clients[0].usage.remaining, 7 * gib);
+  assert.equal(result.clients[0].sources.length, 2);
+  assert.equal(result.clients[0].sources[0].source, 'wcloud');
+  assert.equal(result.clients[0].sources[0].links, 2);
+  assert.equal(result.clients[0].sources[0].total, 10 * gib);
+  assert.equal(result.clients[0].sources[0].used, 2 * gib);
+  assert.equal(result.clients[0].panels[0].total, 10 * gib);
+  assert.equal(result.clients[0].panels[0].used, 8 * gib);
+  assert.match(html, /Created Configurations/);
+  assert.match(html, /Subscription Usage/);
+  assert.match(html, /Panel Status/);
+  assert.match(html, /wcloud/);
+  assert.match(html, /data-client-search-form/);
+  assert.match(html, /Email or subscription ID/);
+  assert.doesNotMatch(html, />Search<\/button>/);
+  assert.match(html, /data-edit-toggle/);
+  assert.match(html, /action="\/clients\/edit"/);
+  assert.match(html, /Add Usage \(GB\)/);
+  assert.match(html, /data-expiry-time/);
+  assert.match(html, /No expiry/);
+  assert.match(html, /data-client-search="shared shared-sub"/);
+  assert.match(html, /\/assets\/clients\.js/);
+  assert.match(html, /shared-sub/);
+  assert.match(html, /3\.00 GB/);
+  assert.doesNotMatch(html, /first-only-sub/);
+});
+
+test('updates created clients while preserving untouched client fields', async () => {
+  const gib = 1024 ** 3;
+  const firstPanel = {
+    name: 'first-panel',
+    addClientUrl: 'https://first.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct',
+    totalGbRatio: 1
+  };
+  const secondPanel = {
+    name: 'second-panel',
+    addClientUrl: 'https://second.example/secret/panel/api/inbounds/addClient',
+    inboundId: '8',
+    proxy: 'direct',
+    totalGbRatio: 2
+  };
+  const firstClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    flow: '',
+    email: 'shared-1',
+    limitIp: 0,
+    totalGB: 20 * gib,
+    expiryTime: 0,
+    enable: true,
+    tgId: 0,
+    subId: 'shared-sub',
+    comment: 'keep me',
+    reset: 0,
+    created_at: 1780173876000,
+    updated_at: 1780346404000
+  };
+  const secondClient = {
+    ...firstClient,
+    id: '22222222-2222-4222-8222-222222222222',
+    email: 'shared-2',
+    totalGB: 10 * gib
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [firstClient] }),
+    clientStats: [{ subId: 'shared-sub', uuid: firstClient.id, total: 20 * gib, allTime: 1 * gib }]
+  };
+  const secondInbound = {
+    id: 8,
+    settings: JSON.stringify({ clients: [secondClient] }),
+    clientStats: [{ subId: 'shared-sub', uuid: secondClient.id, total: 10 * gib, allTime: 1 * gib }]
+  };
+  const updateRequests = [];
+  const expiryTime = Date.parse('2026-07-01T12:30:00.000Z');
+  const runtime = {
+    async request(target, options) {
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
+          })
+        };
+      }
+
+      const body = new URLSearchParams(options.body);
+      const settings = JSON.parse(body.get('settings'));
+      updateRequests.push({
+        panel: target.name,
+        id: body.get('id'),
+        client: settings.clients[0]
+      });
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          msg: 'Inbound client has been updated.',
+          obj: null
+        })
+      };
+    }
+  };
+
+  const result = await updateCreatedPanelClient(runtime, [firstPanel, secondPanel], {
+    subId: 'shared-sub',
+    status: 'disable',
+    addGB: '4',
+    expiryDate: '2026-07-01T12:30:00.000Z',
+    clearExpiry: false
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(updateRequests.length, 2);
+  assert.equal(updateRequests[0].id, '4');
+  assert.equal(updateRequests[1].id, '8');
+  assert.equal(updateRequests[0].client.email, 'shared-1');
+  assert.equal(updateRequests[1].client.email, 'shared-2');
+  assert.equal(updateRequests[0].client.subId, 'shared-sub');
+  assert.equal(updateRequests[1].client.subId, 'shared-sub');
+  assert.equal(updateRequests[0].client.comment, 'keep me');
+  assert.equal(updateRequests[0].client.created_at, 1780173876000);
+  assert.equal(updateRequests[0].client.totalGB, 24 * gib);
+  assert.equal(updateRequests[1].client.totalGB, 12 * gib);
+  assert.equal(updateRequests[0].client.enable, false);
+  assert.equal(updateRequests[1].client.enable, false);
+  assert.equal(updateRequests[0].client.expiryTime, expiryTime);
+  assert.equal(updateRequests[1].client.expiryTime, expiryTime);
+});
+
+test('updates clients through Xray panels before direct panels and skips direct after Xray failure', async () => {
+  const gib = 1024 ** 3;
+  const xrayPanel = {
+    name: 'xray-panel',
+    addClientUrl: 'https://xray.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'xray',
+    totalGbRatio: 1
+  };
+  const directPanel = {
+    name: 'direct-panel',
+    addClientUrl: 'https://direct.example/secret/panel/api/inbounds/addClient',
+    inboundId: '8',
+    proxy: 'direct',
+    totalGbRatio: 1
+  };
+  const xrayClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'shared-xray',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 5 * gib
+  };
+  const directClient = {
+    id: '22222222-2222-4222-8222-222222222222',
+    email: 'shared-direct',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 5 * gib
+  };
+  const xrayInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [xrayClient] }),
+    clientStats: [{ subId: 'shared-sub', uuid: xrayClient.id, total: 5 * gib, allTime: 1 * gib }]
+  };
+  const directInbound = {
+    id: 8,
+    settings: JSON.stringify({ clients: [directClient] }),
+    clientStats: [{ subId: 'shared-sub', uuid: directClient.id, total: 5 * gib, allTime: 1 * gib }]
+  };
+  const updateRequests = [];
+  const runtime = {
+    async request(target, options) {
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'xray-panel' ? [xrayInbound] : [directInbound]
+          })
+        };
+      }
+
+      updateRequests.push(target.name);
+      if (target.name === 'xray-panel') {
+        throw new Error('xray update failed');
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+      };
+    }
+  };
+
+  const result = await updateCreatedPanelClient(runtime, [xrayPanel, directPanel], {
+    subId: 'shared-sub',
+    status: 'disable'
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(updateRequests, ['xray-panel', 'xray-panel', 'xray-panel', 'xray-panel']);
+  assert.match(result.results[0].error, /xray update failed after 4 attempts/);
+  assert.equal(result.results[1].skipped, true);
+  assert.match(result.results[1].error, /skipped after Xray failure/);
+});
+
 test('quota worker skips fully disabled groups and disables active groups on every panel', async () => {
   const gib = 1024 ** 3;
   const firstPanel = {
@@ -673,6 +1062,82 @@ test('quota worker skips fully disabled groups and disables active groups on eve
   assert.equal(result.disabled[0].subId, 'active-sub');
   assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), true);
   assert.equal(updateRequests.length, 3);
+});
+
+test('quota worker retries Xray disables and skips direct panels after Xray failure', async () => {
+  const gib = 1024 ** 3;
+  const xrayPanel = {
+    name: 'xray-panel',
+    addClientUrl: 'https://xray-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'xray'
+  };
+  const directPanel = {
+    name: 'direct-panel',
+    addClientUrl: 'https://direct-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '6',
+    proxy: 'direct'
+  };
+  const xrayClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'active',
+    subId: 'active-sub',
+    enable: true,
+    totalGB: 5 * gib
+  };
+  const directClient = {
+    id: '22222222-2222-4222-8222-222222222222',
+    email: 'active',
+    subId: 'active-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const xrayInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [xrayClient] }),
+    clientStats: [{ subId: 'active-sub', enable: true, total: 5 * gib, allTime: 5 * gib }]
+  };
+  const directInbound = {
+    id: 6,
+    settings: JSON.stringify({ clients: [directClient] }),
+    clientStats: [{ subId: 'active-sub', enable: true, total: 10 * gib, allTime: 0 }]
+  };
+  const updateRequests = [];
+  const runtime = {
+    async request(target, options) {
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'xray-panel' ? [xrayInbound] : [directInbound]
+          })
+        };
+      }
+
+      updateRequests.push(target.name);
+      if (target.name === 'xray-panel') {
+        throw new Error('xray disable failed');
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [xrayPanel, directPanel], {
+    logger: { log() {} }
+  });
+
+  assert.equal(result.checked, 1);
+  assert.equal(result.disabled.length, 0);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.deepEqual(updateRequests, ['xray-panel', 'xray-panel', 'xray-panel', 'xray-panel']);
+  assert.equal(result.skipped.some((item) => item.panel === 'direct-panel' && item.reason.includes('skipped after Xray failure')), true);
 });
 
 test('quota worker treats clientStats enable as authoritative', async () => {

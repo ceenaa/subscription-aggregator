@@ -191,6 +191,12 @@ Open the create-client page:
 https://your-domain.com/inbounds
 ```
 
+Open the created-clients page:
+
+```text
+https://your-domain.com/clients
+```
+
 The page creates the same client on every configured panel. `FIRST_PANEL_PROXY=xray` sends that panel's `addClient` request through the Xray outbound. `SECOND_PANEL_PROXY=direct` and `THIRD_PANEL_PROXY=direct` send those panel requests directly.
 
 The form matches the 3x-ui add-client modal fields: Enabled, Email, ID, Subscription, Comment, Total Flow, Start After First Use, and Duration. The API payload still includes `tgId: ""` because 3x-ui expects that key even when Telegram ID is not shown in the modal.
@@ -218,6 +224,10 @@ https://your-domain.com/sub/CLIENT_SUBSCRIPTION_ID
 It also shows a QR code plus links for the info page, forced base64 output, and plain decoded output.
 
 Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before exposing this page outside localhost. The page uses HTTP Basic Auth when both values are configured.
+
+The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every configured inbound, supports live filtering by email or subscription ID, and gets usage from the same subscription headers used by `/sub/:token`. Its edit form can enable or disable the client, add base traffic using each panel's `TOTAL_GB_RATIO`, set an expiry date, or clear expiry while preserving all other client fields.
+
+Panel mutations run Xray-routed panels before direct panels. Each Xray mutation gets the initial attempt plus three retries; if an Xray mutation still fails, later panel mutations are skipped so direct panels are not updated alone.
 
 Panel cookies are sensitive. Keep them only in `.env`, which is ignored by git:
 

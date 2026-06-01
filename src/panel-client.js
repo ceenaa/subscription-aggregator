@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 
 const GIB = 1024 ** 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -212,18 +213,32 @@ export async function addClientToPanel(runtime, panel, input) {
 
 export async function addClientToPanels(runtime, panels, input) {
   const panelInputs = addDuplicatePanelEmailSuffixes(panels, input);
+  const items = panels.map((panel, index) => ({ panel, input: panelInputs[index] }));
 
-  return Promise.all(
-    panels.map(async (panel, index) => {
-      try {
-        return await addClientToPanel(runtime, panel, panelInputs[index]);
-      } catch (error) {
-        return {
-          panel,
-          ok: false,
-          error: error.message
-        };
+  return runPanelMutationsXrayFirst(
+    items,
+    async (item) => {
+      const result = await addClientToPanel(runtime, item.panel, item.input);
+      if (!result.ok) {
+        const message = result.response?.msg || 'panel request failed';
+        throw new Error(message);
       }
-    })
+
+      return result;
+    },
+    {
+      panelFor: (item) => item.panel,
+      onError: (item, error) => ({
+        panel: item.panel,
+        ok: false,
+        error: error.message
+      }),
+      onSkipped: (item, error) => ({
+        panel: item.panel,
+        ok: false,
+        skipped: true,
+        error: `skipped after Xray failure: ${error.message}`
+      })
+    }
   );
 }

@@ -68,3 +68,98 @@ export const INBOUNDS_SCRIPT = `${COPY_SCRIPT}
     });
   }
 })();`;
+
+export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
+(() => {
+  const form = document.querySelector('[data-client-search-form]');
+  const input = document.querySelector('[data-client-search-input]');
+  const clearButton = document.querySelector('[data-client-search-clear]');
+  const count = document.querySelector('[data-client-search-count]');
+  const rows = Array.from(document.querySelectorAll('[data-client-row]'));
+
+  function applyFilter() {
+    const query = (input?.value || '').trim().toLowerCase();
+    let visible = 0;
+
+    for (const row of rows) {
+      const key = row.dataset.clientSearch || '';
+      const detail = row.nextElementSibling?.hasAttribute('data-panel-row')
+        ? row.nextElementSibling
+        : null;
+      const match = !query || key.includes(query);
+
+      row.hidden = !match;
+      if (detail) detail.hidden = !match;
+      if (match) visible += 1;
+    }
+
+    if (count) {
+      count.textContent = visible + ' shown';
+    }
+  }
+
+  form?.addEventListener('submit', (event) => {
+    event.preventDefault();
+  });
+
+  clearButton?.addEventListener('click', () => {
+    if (!input) return;
+    input.value = '';
+    input.focus();
+    applyFilter();
+  });
+
+  input?.addEventListener('input', applyFilter);
+
+  for (const button of document.querySelectorAll('[data-edit-toggle]')) {
+    button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click', () => {
+      const panel = button.closest('tr')?.nextElementSibling?.querySelector('[data-edit-panel]');
+      if (!panel) return;
+      panel.hidden = !panel.hidden;
+      button.setAttribute('aria-expanded', String(!panel.hidden));
+      button.textContent = panel.hidden ? 'Edit' : 'Editing';
+    });
+  }
+
+  for (const button of document.querySelectorAll('[data-edit-cancel]')) {
+    button.addEventListener('click', () => {
+      const panel = button.closest('[data-edit-panel]');
+      const toggle = panel?.closest('tr')?.previousElementSibling?.querySelector('[data-edit-toggle]');
+      if (!panel) return;
+      panel.hidden = true;
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.textContent = 'Edit';
+      }
+    });
+  }
+
+  for (const checkbox of document.querySelectorAll('[data-clear-expiry]')) {
+    const dateInput = checkbox.closest('form')?.querySelector('[data-expiry-date]');
+    const sync = () => {
+      if (!dateInput) return;
+      dateInput.disabled = checkbox.checked;
+      if (checkbox.checked) dateInput.value = '';
+    };
+
+    checkbox.addEventListener('change', sync);
+    sync();
+  }
+
+  for (const editForm of document.querySelectorAll('[data-edit-panel]')) {
+    editForm.addEventListener('submit', () => {
+      const dateInput = editForm.querySelector('[data-expiry-date]');
+      const timestampInput = editForm.querySelector('[data-expiry-time]');
+      const clearExpiry = editForm.querySelector('[data-clear-expiry]');
+      if (!dateInput || !timestampInput) return;
+
+      timestampInput.value =
+        dateInput.value && !clearExpiry?.checked
+          ? String(new Date(dateInput.value).getTime())
+          : '';
+    });
+  }
+
+  applyFilter();
+})();`;

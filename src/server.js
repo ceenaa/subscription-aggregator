@@ -21,7 +21,9 @@ import { absoluteSubscriptionUrl, getRequestUrl } from './url-context.js';
 import { isAuthorized, isAdminAuthEnabled } from './auth.js';
 import { addClientToPanels, defaultInboundFormValues } from './panel-client.js';
 import { renderInboundsPage } from './inbounds-page.js';
-import { COPY_SCRIPT, INBOUNDS_SCRIPT } from './assets.js';
+import { listCreatedPanelClients, updateCreatedPanelClient } from './panel-clients.js';
+import { renderClientsPage } from './clients-page.js';
+import { CLIENTS_SCRIPT, COPY_SCRIPT, INBOUNDS_SCRIPT } from './assets.js';
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const PROJECT_ROOT = path.dirname(path.dirname(MODULE_PATH));
@@ -150,6 +152,34 @@ function buildCreatedSubscription(config, request, subId) {
   };
 }
 
+function clientEditValuesFromBody(body) {
+  const params = new URLSearchParams(body);
+  return {
+    subId: params.get('subId') || '',
+    status: params.get('status') || '',
+    addGB: params.get('addGB') || '',
+    expiryDate: params.get('expiryDate') || '',
+    expiryTime: params.get('expiryTime') || '',
+    clearExpiry: params.get('clearExpiry') === 'true'
+  };
+}
+
+async function loadClientsView(config, runtime, request) {
+  const result = await listCreatedPanelClients(runtime, config.panels, {
+    sources: config.sources,
+    concurrency: config.worker.concurrency
+  });
+  const clients = result.clients.map((client) => ({
+    ...client,
+    subscriptionUrl: absoluteSubscriptionUrl(config, request, client.subId)
+  }));
+
+  return {
+    panels: result.panels,
+    clients
+  };
+}
+
 async function createNodeServer(config, handler) {
   if (!config.https.enabled) return http.createServer(handler);
 
@@ -202,6 +232,11 @@ export async function createServer(config = loadConfig()) {
 
       if (url.pathname === '/assets/copy.js') {
         sendJavaScript(config, request, response, 200, COPY_SCRIPT);
+        return;
+      }
+
+      if (url.pathname === '/assets/clients.js') {
+        sendJavaScript(config, request, response, 200, CLIENTS_SCRIPT);
         return;
       }
 
@@ -265,6 +300,98 @@ export async function createServer(config = loadConfig()) {
             values,
             results,
             subscription: buildCreatedSubscription(config, request, values.subId)
+          })
+        );
+        return;
+      }
+
+      if (url.pathname === '/clients' || url.pathname === '/clients/edit') {
+        if (!isAuthorized(config, request)) {
+          sendUnauthorized(config, request, response);
+          return;
+        }
+
+        const isClientEdit = url.pathname === '/clients/edit';
+        if (
+          (isClientEdit && request.method !== 'POST') ||
+          (!isClientEdit && request.method !== 'GET' && request.method !== 'HEAD')
+        ) {
+          sendJson(config, request, response, 405, { error: isClientEdit ? 'Only POST is supported' : 'Only GET and HEAD are supported' }, {
+            Allow: isClientEdit ? 'POST, OPTIONS' : 'GET, HEAD, OPTIONS'
+          });
+          return;
+        }
+
+        if (!panelsConfigured(config)) {
+          sendHtml(
+            config,
+            request,
+            response,
+            500,
+            renderClientsPage({
+              error:
+                'Panel configuration is incomplete. Set ADD_CLIENT_URL and INBOUND_ID for every configured panel in .env.'
+            })
+          );
+          return;
+        }
+
+        let updateResult = null;
+        if (isClientEdit) {
+          try {
+            const values = clientEditValuesFromBody(await readRequestBody(request));
+            updateResult = await updateCreatedPanelClient(runtime, config.panels, values);
+          } catch (error) {
+            let view = { panels: config.panels, clients: [] };
+            try {
+              view = await loadClientsView(config, runtime, request);
+            } catch {
+              // Keep the original edit error visible even if reloading the table also fails.
+            }
+
+            sendHtml(
+              config,
+              request,
+              response,
+              400,
+              renderClientsPage({
+                ...view,
+                error: error.message,
+                updatedAt: new Date()
+              })
+            );
+            return;
+          }
+        }
+
+        let result;
+        try {
+          result = await loadClientsView(config, runtime, request);
+        } catch (error) {
+          sendHtml(
+            config,
+            request,
+            response,
+            502,
+            renderClientsPage({
+              panels: config.panels,
+              error: error.message
+            })
+          );
+          return;
+        }
+
+        sendHtml(
+          config,
+          request,
+          response,
+          200,
+          renderClientsPage({
+            panels: result.panels,
+            clients: result.clients,
+            updatedAt: new Date(),
+            message: updateResult ? `Updated ${updateResult.subId}` : '',
+            updateResults: updateResult?.results || []
           })
         );
         return;
@@ -374,6 +501,7 @@ async function main() {
     console.log(`subscription aggregator listening on ${origin}`);
     console.log(`base64 subscription: ${origin}/sub/:token`);
     console.log(`plain links:          ${origin}/sub/plain/:token`);
+    console.log(`created clients:      ${origin}/clients`);
   });
 
   const shutdown = async () => {
