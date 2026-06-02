@@ -174,6 +174,20 @@ export function buildXrayConfigFromVlessLink(vlessLink, localHttpPort) {
     streamSettings.wsSettings = wsSettings;
   }
 
+  if (network === 'xhttp') {
+    const xhttpSettings = {
+      path: params.get('path') || '/'
+    };
+
+    const host = params.get('host');
+    if (host) xhttpSettings.host = host;
+
+    const mode = params.get('mode');
+    if (mode) xhttpSettings.mode = mode;
+
+    streamSettings.xhttpSettings = xhttpSettings;
+  }
+
   return {
     log: {
       loglevel: 'warning'

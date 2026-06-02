@@ -1622,6 +1622,26 @@ test('builds an xray local HTTP inbound with a VLESS WS TLS outbound', () => {
   assert.equal(config.outbounds[0].streamSettings.tlsSettings.fingerprint, 'chrome');
 });
 
+test('builds an xray VLESS XHTTP TLS outbound', () => {
+  const config = buildXrayConfigFromVlessLink(
+    'vless://5cb55313-824f-4315-aab9-bd9032fade8b@ip2.feywebsite.ir:2087?encryption=none&type=xhttp&mode=auto&host=sn1.asukasimp.com&security=tls&fp=chrome&sni=sn1.asukasimp.com&alpn=h2#FeyVPN%25F0%259F%2587%25AB%25F0%259F%2587%25AE',
+    10808
+  );
+
+  assert.equal(config.outbounds[0].settings.vnext[0].address, 'ip2.feywebsite.ir');
+  assert.equal(config.outbounds[0].settings.vnext[0].port, 2087);
+  assert.equal(config.outbounds[0].settings.vnext[0].users[0].id, '5cb55313-824f-4315-aab9-bd9032fade8b');
+  assert.equal(config.outbounds[0].settings.vnext[0].users[0].encryption, 'none');
+  assert.equal(config.outbounds[0].streamSettings.network, 'xhttp');
+  assert.equal(config.outbounds[0].streamSettings.security, 'tls');
+  assert.equal(config.outbounds[0].streamSettings.xhttpSettings.path, '/');
+  assert.equal(config.outbounds[0].streamSettings.xhttpSettings.host, 'sn1.asukasimp.com');
+  assert.equal(config.outbounds[0].streamSettings.xhttpSettings.mode, 'auto');
+  assert.equal(config.outbounds[0].streamSettings.tlsSettings.serverName, 'sn1.asukasimp.com');
+  assert.deepEqual(config.outbounds[0].streamSettings.tlsSettings.alpn, ['h2']);
+  assert.equal(config.outbounds[0].streamSettings.tlsSettings.fingerprint, 'chrome');
+});
+
 test('builds an xray VLESS TCP REALITY outbound', () => {
   const config = buildXrayConfigFromVlessLink(
     'vless://11111111-1111-4111-8111-111111111111@reality.example:443?encryption=none&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&security=reality&sid=abcdef&sni=www.example.com&spx=%2Fspider&type=tcp#test-reality',
