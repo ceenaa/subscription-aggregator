@@ -77,6 +77,153 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
   const count = document.querySelector('[data-client-search-count]');
   const rows = Array.from(document.querySelectorAll('[data-client-row]'));
 
+  function numberOrZero(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function formatBytes(bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let value = numberOrZero(bytes);
+    let unitIndex = 0;
+    if (value <= 0) return '0 B';
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+
+    return value.toFixed(unitIndex === 0 ? 0 : 2) + ' ' + units[unitIndex];
+  }
+
+  function quotaText(value) {
+    return numberOrZero(value) > 0 ? formatBytes(value) : 'Unlimited';
+  }
+
+  function remainingText(usage) {
+    return numberOrZero(usage?.total) > 0 ? formatBytes(usage?.remaining) : 'Unlimited';
+  }
+
+  function percent(used, total) {
+    const parsedTotal = numberOrZero(total);
+    if (!parsedTotal) return 0;
+    return Math.min(Math.max((numberOrZero(used) / parsedTotal) * 100, 0), 100);
+  }
+
+  function appendCell(row, value, strong = false) {
+    const cell = document.createElement('td');
+    if (strong) {
+      const element = document.createElement('strong');
+      element.textContent = value;
+      cell.appendChild(element);
+    } else {
+      cell.textContent = value;
+    }
+    row.appendChild(cell);
+  }
+
+  function renderSourceTable(sources) {
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const tbody = document.createElement('tbody');
+    const headerRow = document.createElement('tr');
+    table.className = 'panel-table';
+
+    for (const label of [
+      'Source',
+      'Route',
+      'Links',
+      'Downloaded',
+      'Uploaded',
+      'Used',
+      'Quota',
+      'Remaining',
+      'Expiry'
+    ]) {
+      const header = document.createElement('th');
+      header.textContent = label;
+      headerRow.appendChild(header);
+    }
+
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    for (const source of sources || []) {
+      const row = document.createElement('tr');
+      appendCell(row, source.source || '', true);
+      appendCell(row, source.proxy || '');
+      appendCell(row, String(source.links ?? 0));
+      appendCell(row, formatBytes(source.download));
+      appendCell(row, formatBytes(source.upload));
+      appendCell(row, formatBytes(source.used));
+      appendCell(row, quotaText(source.total));
+      appendCell(row, remainingText(source));
+      appendCell(row, source.expiry || '');
+      tbody.appendChild(row);
+    }
+
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function replaceChildren(node, children) {
+    while (node.firstChild) node.firstChild.remove();
+    for (const child of children) node.appendChild(child);
+  }
+
+  function updateSummaryUsage(container, usage) {
+    const detailRow = container.closest('[data-panel-row]');
+    const clientRow = detailRow?.previousElementSibling;
+    if (!clientRow?.hasAttribute('data-client-row')) return;
+
+    const used = clientRow.querySelector('[data-client-used]');
+    const total = clientRow.querySelector('[data-client-total]');
+    const remaining = clientRow.querySelector('[data-client-remaining]');
+    const meter = clientRow.querySelector('[data-client-meter]');
+
+    if (used) used.textContent = formatBytes(usage?.used);
+    if (total) total.textContent = quotaText(usage?.total);
+    if (remaining) remaining.textContent = remainingText(usage);
+    if (meter) meter.style.width = percent(usage?.used, usage?.total).toFixed(2) + '%';
+  }
+
+  async function loadSourceUsage(container) {
+    if (container.dataset.loaded === 'true' || container.dataset.loading === 'true') return;
+
+    const status = container.querySelector('[data-source-status]');
+    const tableTarget = container.querySelector('[data-source-table]');
+    const subId = container.dataset.subId || '';
+    if (!subId || !tableTarget) return;
+
+    container.dataset.loading = 'true';
+    if (status) {
+      status.hidden = false;
+      status.textContent = 'Loading subscription usage...';
+    }
+
+    try {
+      const response = await fetch('/clients/usage?subId=' + encodeURIComponent(subId), {
+        headers: { Accept: 'application/json' }
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || 'Usage request failed');
+      }
+
+      replaceChildren(tableTarget, [renderSourceTable(payload.sources || [])]);
+      updateSummaryUsage(container, payload.usage || {});
+      container.dataset.loaded = 'true';
+      if (status) status.hidden = true;
+    } catch (error) {
+      if (status) {
+        status.hidden = false;
+        status.textContent = error.message || 'Usage request failed';
+      }
+    } finally {
+      delete container.dataset.loading;
+    }
+  }
+
   function applyFilter() {
     const query = (input?.value || '').trim().toLowerCase();
     let visible = 0;
@@ -159,6 +306,19 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
           ? String(new Date(dateInput.value).getTime())
           : '';
     });
+  }
+
+  for (const details of document.querySelectorAll('[data-client-details]')) {
+    details.addEventListener('toggle', () => {
+      if (!details.open) return;
+      const container = details.querySelector('[data-source-usage]');
+      if (container) loadSourceUsage(container);
+    });
+
+    if (details.open) {
+      const container = details.querySelector('[data-source-usage]');
+      if (container) loadSourceUsage(container);
+    }
   }
 
   applyFilter();

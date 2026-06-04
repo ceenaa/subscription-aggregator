@@ -88,11 +88,8 @@ function panelRows(client) {
     .join('');
 }
 
-function sourceRows(client) {
-  if (!client.sources?.length) return '';
-
+function sourceTable(sources) {
   return `
-    <h3>Subscription Usage</h3>
     <table class="panel-table">
       <thead>
         <tr>
@@ -108,7 +105,7 @@ function sourceRows(client) {
         </tr>
       </thead>
       <tbody>
-        ${client.sources
+        ${sources
           .map(
             (source) => `
               <tr>
@@ -127,6 +124,24 @@ function sourceRows(client) {
           .join('')}
       </tbody>
     </table>
+  `;
+}
+
+function sourceRows(client) {
+  const hasSources = client.sources?.length > 0;
+  if (!hasSources && !client.canLoadSubscriptionUsage) return '';
+
+  return `
+    <section
+      class="source-usage"
+      data-source-usage
+      data-sub-id="${escapeHtml(client.subId)}"
+      ${hasSources ? 'data-loaded="true"' : ''}
+    >
+      <h3>Subscription Usage</h3>
+      <div class="source-status" data-source-status ${hasSources ? 'hidden' : ''}>Loading subscription usage...</div>
+      <div data-source-table>${hasSources ? sourceTable(client.sources) : ''}</div>
+    </section>
   `;
 }
 
@@ -152,12 +167,12 @@ function clientRows(clients) {
             <span>${escapeHtml(client.subId)}</span>
           </td>
           <td><span class="status ${statusClass(client.status)}">${escapeHtml(client.status)}</span></td>
-          <td>${formatBytes(usage.used)}</td>
-          <td>${quotaText(usage.total)}</td>
-          <td>${remainingText(usage)}</td>
+          <td data-client-used>${formatBytes(usage.used)}</td>
+          <td data-client-total>${quotaText(usage.total)}</td>
+          <td data-client-remaining>${remainingText(usage)}</td>
           <td>
             <div class="meter" aria-label="Normalized usage">
-              <span style="width: ${meterWidth}%"></span>
+              <span data-client-meter style="width: ${meterWidth}%"></span>
             </div>
           </td>
           <td>
@@ -169,7 +184,7 @@ function clientRows(clients) {
         <tr class="panel-row" data-panel-row>
           <td colspan="7">
             ${editForm(client)}
-            <details>
+            <details data-client-details>
               <summary>${client.enabledPanels}/${client.totalPanels} panels active</summary>
               ${client.usageError ? `<p class="usage-error">${escapeHtml(client.usageError)}</p>` : ''}
               ${sourceRows(client)}
@@ -726,6 +741,12 @@ export function renderClientsPage({
     .usage-error {
       margin-top: 10px;
       color: #fecdd3;
+      font-size: 13px;
+    }
+
+    .source-status {
+      margin-top: 10px;
+      color: var(--muted);
       font-size: 13px;
     }
 

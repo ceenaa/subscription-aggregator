@@ -225,7 +225,7 @@ It also shows a QR code plus links for the info page, forced base64 output, and 
 
 Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before exposing this page outside localhost. The page uses HTTP Basic Auth when both values are configured.
 
-The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every configured inbound, supports live filtering by email or subscription ID, and gets usage from the same subscription headers used by `/sub/:token`. Its edit form can enable or disable the client, add base traffic using each panel's `TOTAL_GB_RATIO`, set an expiry date, or clear expiry while preserving all other client fields.
+The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every configured inbound, supports live filtering by email or subscription ID, and starts with normalized panel usage so the page can respond quickly. Opening a client's details loads the same subscription-header usage used by `/sub/:token` for that client. Use `/clients?usage=subscription` when you need the older eager refresh that loads subscription usage for every client before rendering. Its edit form can enable or disable the client, add base traffic using each panel's `TOTAL_GB_RATIO`, set an expiry date, or clear expiry while preserving all other client fields.
 
 Panel mutations run Xray-routed panels before direct panels. Each Xray mutation gets the initial attempt plus three retries; if an Xray mutation still fails, later panel mutations are skipped so direct panels are not updated alone.
 

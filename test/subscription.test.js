@@ -695,6 +695,7 @@ test('lists only clients present in every configured panel inbound', async () =>
       }
     ]
   };
+  let fetchCalls = 0;
   const runtime = {
     async request(target) {
       return {
@@ -707,6 +708,7 @@ test('lists only clients present in every configured panel inbound', async () =>
       };
     },
     async fetch(source) {
+      fetchCalls += 1;
       const firstLink = 'vless://11111111-1111-4111-8111-111111111111@example.com:443#one';
       const secondLink = 'vless://22222222-2222-4222-8222-222222222222@example.com:443#two';
       const isFirst = source.name === 'wcloud';
@@ -741,6 +743,7 @@ test('lists only clients present in every configured panel inbound', async () =>
   });
 
   assert.equal(result.clients.length, 1);
+  assert.equal(fetchCalls, 2);
   assert.equal(result.clients[0].subId, 'shared-sub');
   assert.equal(result.clients[0].status, 'Active');
   assert.equal(result.clients[0].enabledPanels, 2);
@@ -771,6 +774,33 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.match(html, /shared-sub/);
   assert.match(html, /3\.00 GB/);
   assert.doesNotMatch(html, /first-only-sub/);
+
+  fetchCalls = 0;
+  const fastResult = await listCreatedPanelClients(runtime, [firstPanel, secondPanel], {
+    sources: [
+      { name: 'wcloud', baseUrl: 'https://wcloud.example/sub', proxy: 'xray' },
+      { name: 'nimcloud', baseUrl: 'https://nimcloud.example/sub', proxy: 'direct' }
+    ],
+    concurrency: 2,
+    includeSubscriptionUsage: false
+  });
+  const fastHtml = renderClientsPage({
+    panels: fastResult.panels,
+    clients: fastResult.clients.map((client) => ({
+      ...client,
+      subscriptionUrl: `https://subscriptions.example/sub/${client.subId}`,
+      canLoadSubscriptionUsage: true
+    })),
+    updatedAt: new Date('2026-06-02T10:00:00Z')
+  });
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(fastResult.clients[0].sources.length, 0);
+  assert.equal(fastResult.clients[0].usage.total, 10 * gib);
+  assert.equal(fastResult.clients[0].usage.used, 9 * gib);
+  assert.match(fastHtml, /data-source-usage/);
+  assert.match(fastHtml, /data-sub-id="shared-sub"/);
+  assert.match(fastHtml, /Loading subscription usage/);
 });
 
 test('updates created clients while preserving untouched client fields', async () => {

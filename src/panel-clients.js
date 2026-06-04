@@ -199,7 +199,7 @@ async function updatePanelClient(runtime, entry, updates) {
   };
 }
 
-async function subscriptionUsage(runtime, sources, subId) {
+export async function loadCreatedPanelClientSubscriptionUsage(runtime, sources, subId) {
   const result = await aggregateSubscriptions(sourcesForToken(sources, subId), runtime.fetch);
 
   return {
@@ -211,6 +211,7 @@ async function subscriptionUsage(runtime, sources, subId) {
 export async function listCreatedPanelClients(runtime, panels, options = {}) {
   const configuredSources = options.sources || [];
   const concurrency = options.concurrency || 5;
+  const includeSubscriptionUsage = options.includeSubscriptionUsage !== false;
   const configuredPanels = panels.filter((panel) => panel?.addClientUrl && panel?.inboundId);
   if (configuredPanels.length < 2) {
     throw new Error('At least two configured panels are required to list created clients');
@@ -245,9 +246,15 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
 
     if (configuredSources.length > 0) {
       try {
-        const subscription = await subscriptionUsage(runtime, configuredSources, subId);
-        usage = subscription.usage;
-        sources = subscription.sources;
+        if (includeSubscriptionUsage) {
+          const subscription = await loadCreatedPanelClientSubscriptionUsage(
+            runtime,
+            configuredSources,
+            subId
+          );
+          usage = subscription.usage;
+          sources = subscription.sources;
+        }
       } catch (error) {
         usageError = error.message;
       }

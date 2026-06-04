@@ -21,7 +21,11 @@ import { absoluteSubscriptionUrl, getRequestUrl } from './url-context.js';
 import { isAuthorized, isAdminAuthEnabled } from './auth.js';
 import { addClientToPanels, defaultInboundFormValues } from './panel-client.js';
 import { renderInboundsPage } from './inbounds-page.js';
-import { listCreatedPanelClients, updateCreatedPanelClient } from './panel-clients.js';
+import {
+  listCreatedPanelClients,
+  loadCreatedPanelClientSubscriptionUsage,
+  updateCreatedPanelClient
+} from './panel-clients.js';
 import { renderClientsPage } from './clients-page.js';
 import { CLIENTS_SCRIPT, COPY_SCRIPT, INBOUNDS_SCRIPT } from './assets.js';
 
@@ -164,14 +168,17 @@ function clientEditValuesFromBody(body) {
   };
 }
 
-async function loadClientsView(config, runtime, request) {
+async function loadClientsView(config, runtime, request, options = {}) {
+  const includeSubscriptionUsage = options.includeSubscriptionUsage === true;
   const result = await listCreatedPanelClients(runtime, config.panels, {
     sources: config.sources,
-    concurrency: config.worker.concurrency
+    concurrency: config.worker.concurrency,
+    includeSubscriptionUsage
   });
   const clients = result.clients.map((client) => ({
     ...client,
-    subscriptionUrl: absoluteSubscriptionUrl(config, request, client.subId)
+    subscriptionUrl: absoluteSubscriptionUrl(config, request, client.subId),
+    canLoadSubscriptionUsage: config.sources.length > 0 && !includeSubscriptionUsage
   }));
 
   return {
@@ -305,6 +312,42 @@ export async function createServer(config = loadConfig()) {
         return;
       }
 
+      if (url.pathname === '/clients/usage') {
+        if (!isAuthorized(config, request)) {
+          sendUnauthorized(config, request, response);
+          return;
+        }
+
+        if (request.method !== 'GET' && request.method !== 'HEAD') {
+          sendJson(config, request, response, 405, { error: 'Only GET and HEAD are supported' }, {
+            Allow: 'GET, HEAD, OPTIONS'
+          });
+          return;
+        }
+
+        const subId = url.searchParams.get('subId') || '';
+        if (!subId) {
+          sendJson(config, request, response, 400, { error: 'subId is required' });
+          return;
+        }
+
+        try {
+          const result = await loadCreatedPanelClientSubscriptionUsage(
+            runtime,
+            config.sources,
+            subId
+          );
+          sendJson(config, request, response, 200, {
+            subId,
+            usage: result.usage,
+            sources: result.sources
+          });
+        } catch (error) {
+          sendJson(config, request, response, 502, { error: error.message });
+        }
+        return;
+      }
+
       if (url.pathname === '/clients' || url.pathname === '/clients/edit') {
         if (!isAuthorized(config, request)) {
           sendUnauthorized(config, request, response);
@@ -366,7 +409,9 @@ export async function createServer(config = loadConfig()) {
 
         let result;
         try {
-          result = await loadClientsView(config, runtime, request);
+          result = await loadClientsView(config, runtime, request, {
+            includeSubscriptionUsage: url.searchParams.get('usage') === 'subscription'
+          });
         } catch (error) {
           sendHtml(
             config,
