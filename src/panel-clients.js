@@ -213,8 +213,8 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
   const concurrency = options.concurrency || 5;
   const includeSubscriptionUsage = options.includeSubscriptionUsage !== false;
   const configuredPanels = panels.filter((panel) => panel?.addClientUrl && panel?.inboundId);
-  if (configuredPanels.length < 2) {
-    throw new Error('At least two configured panels are required to list created clients');
+  if (configuredPanels.length < 1) {
+    throw new Error('At least one configured panel inbound is required to list created clients');
   }
 
   const panelStates = await Promise.all(
@@ -294,8 +294,8 @@ export async function updateCreatedPanelClient(runtime, panels, input) {
   if (!input.subId) throw new Error('subId is required');
 
   const configuredPanels = panels.filter((panel) => panel?.addClientUrl && panel?.inboundId);
-  if (configuredPanels.length < 2) {
-    throw new Error('At least two configured panels are required to update clients');
+  if (configuredPanels.length < 1) {
+    throw new Error('At least one configured panel inbound is required to update clients');
   }
 
   const panelStates = await Promise.all(

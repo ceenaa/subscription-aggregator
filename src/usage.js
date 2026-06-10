@@ -41,6 +41,11 @@ function quotaDivisor(value) {
   return Number.isFinite(parsed) && parsed > 1 ? parsed : 1;
 }
 
+function totalGbRatio(value) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
 export function normalizeQuotaUsage(usage, options = {}) {
   const divisor = quotaDivisor(
     options.quotaDivisor ?? usage.quotaDivisor ?? usage.configCount ?? usage.count
@@ -64,6 +69,27 @@ export function usageFromResult(result) {
   return normalizeQuotaUsage(parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']), {
     quotaDivisor: result.count
   });
+}
+
+function baseRatioUsageFromResult(result) {
+  const usage = usageFromResult(result);
+  if (usage.hasData === false) return usage;
+
+  const ratio = totalGbRatio(result.source?.totalGbRatio);
+  const upload = numberOrZero(usage.upload) * ratio;
+  const download = numberOrZero(usage.download) * ratio;
+  const used = numberOrZero(usage.used) * ratio;
+  const total = numberOrZero(usage.total) * ratio;
+
+  return {
+    ...usage,
+    upload,
+    download,
+    used,
+    total,
+    remaining: total > 0 ? Math.max(total - used, 0) : 0,
+    totalGbRatio: 1
+  };
 }
 
 export function summarizeUsage(results) {
@@ -127,7 +153,7 @@ export function normalizeCombinedUsage(entries) {
 }
 
 export function summarizeNormalizedUsage(results) {
-  const usages = results.map(usageFromResult);
+  const usages = results.map(baseRatioUsageFromResult);
   if (usages.length === 0 || usages.some((usage) => !usage.hasData)) {
     return {
       upload: 0,

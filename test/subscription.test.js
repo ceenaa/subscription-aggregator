@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { parseDotEnv } from '../src/env.js';
 import {
@@ -17,6 +20,7 @@ import { renderQrSvg } from '../src/qr.js';
 import { renderSubscriptionPage } from '../src/page.js';
 import { renderInboundsPage } from '../src/inbounds-page.js';
 import { renderClientsPage } from '../src/clients-page.js';
+import { renderSettingsPage } from '../src/settings-page.js';
 import { subscriptionAppLinks } from '../src/app-links.js';
 import { listCreatedPanelClients, updateCreatedPanelClient } from '../src/panel-clients.js';
 import {
@@ -28,11 +32,12 @@ import {
   summarizeUsage,
   usageFromResult
 } from '../src/usage.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, refreshConfiguredTargets } from '../src/config.js';
+import { createInbound, createPanel, loadSettingsData, updateInbound } from '../src/config-store.js';
 import { buildResponseHeaders } from '../src/response-headers.js';
 import { getRequestOrigin } from '../src/url-context.js';
 import { addClientToPanels, buildAddClientRequest, buildClientSettings } from '../src/panel-client.js';
-import { isAuthorized } from '../src/auth.js';
+import { isAdminAuthorized, isAuthorized } from '../src/auth.js';
 import {
   buildListInboundsRequest,
   buildUpdateClientRequest,
@@ -310,6 +315,7 @@ test('builds 3x-ui addClient form requests without real panel values', () => {
   assert.equal(settings.clients[0].totalGB, 0);
   assert.equal(settings.clients[0].expiryTime, 0);
   assert.equal(settings.clients[0].enable, true);
+  assert.equal(settings.clients[0].flow, '');
   assert.equal(settings.clients[0].limitIp, 0);
   assert.equal(settings.clients[0].tgId, '');
   assert.equal(settings.clients[0].comment, '');
@@ -352,6 +358,30 @@ test('applies panel total flow ratios as divisors to addClient requests', () => 
 
   assert.equal(first.settings.clients[0].totalGB, 5 * 1024 ** 3);
   assert.equal(second.settings.clients[0].totalGB, 2.5 * 1024 ** 3);
+});
+
+test('applies an inbound XTLS vision flow to addClient requests', () => {
+  const request = buildAddClientRequest(
+    {
+      name: 'vision-inbound',
+      addClientUrl: 'https://vision-panel.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct',
+      clientFlow: 'xtls-rprx-vision'
+    },
+    {
+      clientId: '11111111-1111-4111-8111-111111111111',
+      email: 'client@example.com',
+      subId: 'clienttoken123',
+      totalGB: '0',
+      durationDays: '0',
+      enable: 'true',
+      startAfterFirstUse: 'false',
+      comment: ''
+    }
+  );
+
+  assert.equal(request.settings.clients[0].flow, 'xtls-rprx-vision');
 });
 
 test('adds email suffixes when creating clients on duplicate panel URLs', async () => {
@@ -1420,6 +1450,43 @@ test('renders the inbound form with 3x-ui visible fields', () => {
   assert.doesNotMatch(html, /IP limit/);
 });
 
+test('renders the settings inbound XTLS vision flow toggle', () => {
+  const html = renderSettingsPage({
+    databasePath: '/tmp/config.sqlite3',
+    panels: [
+      {
+        id: 1,
+        name: 'panel',
+        add_client_url: 'https://panel.example/secret/panel/api/inbounds/addClient',
+        cookie: '',
+        proxy: 'direct',
+        enabled: 1,
+        inboundCount: 1
+      }
+    ],
+    inbounds: [
+      {
+        id: 1,
+        panel_id: 1,
+        panelName: 'panel',
+        name: 'vision',
+        inbound_id: '4',
+        total_gb_ratio: 1,
+        quota_divisor: 1,
+        subscription_name: '',
+        subscription_base_url: '',
+        subscription_proxy: '',
+        xtls_vision_flow: 1,
+        enabled: 1
+      }
+    ]
+  });
+
+  assert.match(html, /XTLS Vision Flow/);
+  assert.match(html, /name="xtlsVisionFlow"/);
+  assert.match(html, /XTLS vision flow/);
+});
+
 test('builds app links for subscription clients', () => {
   assert.deepEqual(
     subscriptionAppLinks('https://subscriptions.example/sub/client-token?format=base64', 'client token'),
@@ -1462,6 +1529,8 @@ test('checks optional basic admin auth', () => {
   const header = `Basic ${Buffer.from('admin:secret').toString('base64')}`;
   assert.equal(isAuthorized(config, { headers: { authorization: header } }), true);
   assert.equal(isAuthorized(config, { headers: { authorization: 'Basic bad' } }), false);
+  assert.equal(isAdminAuthorized(config, { headers: { authorization: header } }), true);
+  assert.equal(isAdminAuthorized(loadConfig(baseEnv()), { headers: {} }), false);
   assert.equal(config.panels[0].totalGbRatio, 1.5);
   assert.equal(config.panels[0].quotaDivisor, 2);
   assert.equal(config.panels[1].totalGbRatio, 2);
@@ -1470,6 +1539,251 @@ test('checks optional basic admin auth', () => {
   assert.equal(config.panels[2].inboundId, '6');
   assert.equal(config.panels[2].totalGbRatio, 3);
   assert.equal(config.panels[2].quotaDivisor, 4);
+});
+
+test('loads N panels and M inbounds from sqlite configuration', () => {
+  const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
+  const firstPanelId = createPanel(databasePath, {
+    name: 'edge-panel',
+    addClientUrl: 'https://edge-panel.example/secret/panel/api/inbounds/addClient',
+    cookie: '3x-ui=edge',
+    proxy: 'xray',
+    enabled: true
+  });
+  const secondPanelId = createPanel(databasePath, {
+    name: 'core-panel',
+    addClientUrl: 'https://core-panel.example/secret/panel/api/inbounds/addClient',
+    cookie: '3x-ui=core',
+    proxy: 'direct',
+    enabled: true
+  });
+
+  createInbound(databasePath, {
+    panelId: firstPanelId,
+    name: 'edge-443',
+    inboundId: '4',
+    subscriptionName: 'edge 443',
+    subscriptionBaseUrl: 'https://edge-provider.example/sub',
+    subscriptionProxy: '',
+    totalGbRatio: '1.5',
+    quotaDivisor: '2',
+    xtlsVisionFlow: true,
+    enabled: true
+  });
+  const disabledInboundId = createInbound(databasePath, {
+    panelId: firstPanelId,
+    name: 'edge-8443',
+    inboundId: '5',
+    subscriptionName: 'edge 8443',
+    subscriptionBaseUrl: 'https://edge-provider-alt.example/sub',
+    subscriptionProxy: 'direct',
+    totalGbRatio: '2',
+    quotaDivisor: '1',
+    enabled: true
+  });
+  createInbound(databasePath, {
+    panelId: secondPanelId,
+    name: 'core-443',
+    inboundId: '8',
+    subscriptionName: 'core 443',
+    subscriptionBaseUrl: 'https://core-provider.example/sub',
+    subscriptionProxy: '',
+    totalGbRatio: '3',
+    quotaDivisor: '4',
+    enabled: true
+  });
+
+  const config = loadConfig(
+    baseEnv({
+      SQLITE_DB_PATH: databasePath,
+      FIRST_SUBSCRIPTION_BASE_URL: '',
+      SECOND_SUBSCRIPTION_BASE_URL: ''
+    })
+  );
+  assert.deepEqual(
+    config.panels.map((panel) => ({
+      name: panel.name,
+      panelName: panel.panelName,
+      inboundId: panel.inboundId,
+      proxy: panel.proxy,
+      totalGbRatio: panel.totalGbRatio,
+      quotaDivisor: panel.quotaDivisor,
+      clientFlow: panel.clientFlow
+    })),
+    [
+      {
+        name: 'edge-443',
+        panelName: 'edge-panel',
+        inboundId: '4',
+        proxy: 'xray',
+        totalGbRatio: 1.5,
+        quotaDivisor: 2,
+        clientFlow: 'xtls-rprx-vision'
+      },
+      {
+        name: 'edge-8443',
+        panelName: 'edge-panel',
+        inboundId: '5',
+        proxy: 'xray',
+        totalGbRatio: 2,
+        quotaDivisor: 1,
+        clientFlow: ''
+      },
+      {
+        name: 'core-443',
+        panelName: 'core-panel',
+        inboundId: '8',
+        proxy: 'direct',
+        totalGbRatio: 3,
+        quotaDivisor: 4,
+        clientFlow: ''
+      }
+    ]
+  );
+  assert.deepEqual(
+    config.sources.map((source) => ({
+      name: source.name,
+      baseUrl: source.baseUrl,
+      proxy: source.proxy,
+      totalGbRatio: source.totalGbRatio
+    })),
+    [
+      {
+        name: 'edge 443',
+        baseUrl: 'https://edge-provider.example/sub',
+        proxy: 'xray',
+        totalGbRatio: 1.5
+      },
+      {
+        name: 'edge 8443',
+        baseUrl: 'https://edge-provider-alt.example/sub',
+        proxy: 'direct',
+        totalGbRatio: 2
+      },
+      {
+        name: 'core 443',
+        baseUrl: 'https://core-provider.example/sub',
+        proxy: 'direct',
+        totalGbRatio: 3
+      }
+    ]
+  );
+
+  const settings = loadSettingsData(databasePath);
+  assert.equal(settings.panels.length, 2);
+  assert.equal(settings.inbounds.length, 3);
+  assert.equal(settings.inbounds[0].xtls_vision_flow, 1);
+
+  updateInbound(databasePath, disabledInboundId, {
+    panelId: firstPanelId,
+    name: 'edge-8443',
+    inboundId: '5',
+    subscriptionName: 'edge 8443',
+    subscriptionBaseUrl: 'https://edge-provider-alt.example/sub',
+    subscriptionProxy: 'direct',
+    totalGbRatio: '2',
+    quotaDivisor: '1',
+    enabled: false
+  });
+  refreshConfiguredTargets(config);
+
+  assert.deepEqual(config.panels.map((panel) => panel.name), ['edge-443', 'core-443']);
+  assert.deepEqual(config.sources.map((source) => source.name), ['edge 443', 'core 443']);
+});
+
+test('merges sqlite subscription sources with non-duplicate env sources', () => {
+  const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
+  const panelId = createPanel(databasePath, {
+    name: 'source-panel',
+    addClientUrl: 'https://source-panel.example/secret/panel/api/inbounds/addClient',
+    proxy: 'direct',
+    enabled: true
+  });
+
+  createInbound(databasePath, {
+    panelId,
+    name: 'db-first',
+    inboundId: '1',
+    subscriptionName: 'db first',
+    subscriptionBaseUrl: 'https://first-provider.example/sub',
+    subscriptionProxy: 'xray',
+    totalGbRatio: '1',
+    quotaDivisor: '1',
+    enabled: true
+  });
+  createInbound(databasePath, {
+    panelId,
+    name: 'db-extra',
+    inboundId: '2',
+    subscriptionName: 'db extra',
+    subscriptionBaseUrl: 'https://db-extra.example/sub',
+    subscriptionProxy: 'direct',
+    totalGbRatio: '0.5',
+    quotaDivisor: '1',
+    enabled: true
+  });
+
+  const config = loadConfig(baseEnv({ SQLITE_DB_PATH: databasePath }));
+
+  assert.deepEqual(
+    config.sources.map((source) => ({
+      name: source.name,
+      baseUrl: source.baseUrl,
+      proxy: source.proxy,
+      totalGbRatio: source.totalGbRatio
+    })),
+    [
+      {
+        name: 'db first',
+        baseUrl: 'https://first-provider.example/sub',
+        proxy: 'xray',
+        totalGbRatio: 1
+      },
+      {
+        name: 'db extra',
+        baseUrl: 'https://db-extra.example/sub',
+        proxy: 'direct',
+        totalGbRatio: 0.5
+      },
+      {
+        name: 'nimcloud',
+        baseUrl: 'https://second-provider.example/sub',
+        proxy: 'direct',
+        totalGbRatio: undefined
+      }
+    ]
+  );
+});
+
+test('legacy panel migration is not marked done before legacy panel env exists', () => {
+  const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
+
+  loadConfig(
+    baseEnv({
+      SQLITE_DB_PATH: databasePath,
+      FIRST_SUBSCRIPTION_BASE_URL: '',
+      SECOND_SUBSCRIPTION_BASE_URL: ''
+    })
+  );
+  assert.equal(loadSettingsData(databasePath).panels.length, 0);
+
+  const config = loadConfig(
+    baseEnv({
+      SQLITE_DB_PATH: databasePath,
+      FIRST_SUBSCRIPTION_BASE_URL: '',
+      SECOND_SUBSCRIPTION_BASE_URL: '',
+      FIRST_PANEL_NAME: 'late-panel',
+      FIRST_PANEL_ADD_CLIENT_URL: 'https://late-panel.example/secret/panel/api/inbounds/addClient',
+      FIRST_PANEL_INBOUND_ID: '9',
+      FIRST_PANEL_PROXY: 'direct'
+    })
+  );
+
+  const settings = loadSettingsData(databasePath);
+  assert.equal(settings.panels.length, 1);
+  assert.equal(settings.inbounds.length, 1);
+  assert.equal(config.panels[0].name, 'late-panel');
+  assert.equal(config.panels[0].inboundId, '9');
 });
 
 test('builds source URLs from base URLs and a route token', () => {
@@ -1572,6 +1886,25 @@ test('normalizes only the quota when one panel returns multiple links', () => {
   assert.equal(normalizedSummary.used, 6144);
   assert.equal(normalizedSummary.total, 8192);
   assert.equal(normalizedSummary.remaining, 2048);
+});
+
+test('normalizes aggregated subscription usage back to base ratio units', () => {
+  const result = {
+    count: 1,
+    source: { name: 'discount-ratio-panel', totalGbRatio: 0.5 },
+    headers: {
+      'subscription-userinfo': 'upload=2147483648; download=3221225472; total=21474836480; expire=0'
+    }
+  };
+
+  const sourceUsage = usageFromResult(result);
+  const normalizedSummary = summarizeNormalizedUsage([result]);
+
+  assert.equal(sourceUsage.used, 5 * 1024 ** 3);
+  assert.equal(sourceUsage.total, 20 * 1024 ** 3);
+  assert.equal(normalizedSummary.used, 2.5 * 1024 ** 3);
+  assert.equal(normalizedSummary.total, 10 * 1024 ** 3);
+  assert.equal(normalizedSummary.remaining, 7.5 * 1024 ** 3);
 });
 
 test('renders a local QR SVG', () => {

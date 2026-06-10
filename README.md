@@ -1,12 +1,12 @@
 # Subscription Aggregator
 
-Small Node.js service that fetches two V2Ray/Xray subscription URLs, merges their decoded links, and returns one base64 subscription.
+Small Node.js service that fetches configured V2Ray/Xray subscription URLs, merges their decoded links, and returns one base64 subscription.
 
-The first upstream is fetched through the supplied VLESS/WS/TLS link by starting a temporary local Xray HTTP proxy. The second upstream is fetched directly.
+Subscription sources can be routed directly or through the supplied Xray outbound. 3x-ui panels and inbounds are stored in SQLite so one install can manage any number of panels and any number of inbounds.
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 22.5 or newer
 - `xray` available in `PATH`, or set `XRAY_BIN` in `.env` to the local binary path
 
 No npm dependencies are required.
@@ -31,19 +31,19 @@ Limit parallel client updates with:
 WORKER_CONCURRENCY=5
 ```
 
-The worker loads the same panel config used by `/inbounds`, calls each panel's `inbounds/list` endpoint, finds each configured inbound ID, and matches clients by `subId`. If a client does not exist on every configured panel, it is skipped.
+The worker loads the same panel/inbound config used by `/inbounds`, calls each panel's `inbounds/list` endpoint, finds each enabled configured inbound ID, and matches clients by `subId`. If a client does not exist on every enabled configured inbound, it is skipped.
 
-The worker only evaluates matched clients that are active on at least one panel. If the client is already disabled on every configured panel, it is skipped.
+The worker only evaluates matched clients that are active on at least one inbound. If the client is already disabled on every enabled configured inbound, it is skipped.
 
-A matched client is disabled on every configured panel when any quota check is true:
+A matched client is disabled on every enabled configured inbound when any quota check is true:
 
-- any panel total is nonzero and `allTime >= total`
-- all panel totals are nonzero and normalized combined usage is at or over the highest quota
+- any inbound total is nonzero and `allTime >= total`
+- all inbound totals are nonzero and normalized combined usage is at or over the highest quota
 
 For the combined check, the worker scales lower-quota panels up into the highest-quota panel's units:
 
 ```text
-scale = higherTotal / panelTotal
+scale = higherTotal / inboundTotal
 normalizedUsed = sum(panelUsed * scale)
 disable when normalizedUsed >= higherTotal
 ```
@@ -66,6 +66,9 @@ Endpoints:
 
 - `http://127.0.0.1:3000/sub/YOUR_TOKEN` returns an info page in a browser and the aggregated base64 subscription to subscription clients
 - `http://127.0.0.1:3000/sub/plain/YOUR_TOKEN` returns the decoded merged links
+- `http://127.0.0.1:3000/settings` manages 3x-ui panels and inbounds
+- `http://127.0.0.1:3000/inbounds` creates a client on every enabled configured inbound
+- `http://127.0.0.1:3000/clients` lists and edits created clients
 - `http://127.0.0.1:3000/health` returns a health check
 
 Use `?format=base64` to force raw subscription output in a browser:
@@ -83,18 +86,15 @@ npm run print:plain -- YOUR_TOKEN
 
 ## Configuration
 
-Create a `.env` file in this project directory. The app loads it automatically before starting the server or CLI.
+Create a `.env` file in this project directory. The app loads it automatically before starting the server, CLI, or quota worker. Runtime settings stay in `.env`; panel and inbound settings are stored in SQLite and managed at `/settings`.
 
 ```sh
 PORT=3000
 HOST=127.0.0.1
 REQUEST_TIMEOUT_MS=15000
+SQLITE_DB_PATH=./data/subscription-aggregator.sqlite3
 XRAY_BIN=xray
 
-FIRST_SUBSCRIPTION_BASE_URL=https://first-provider.example/sub
-FIRST_SUBSCRIPTION_PROXY=xray
-SECOND_SUBSCRIPTION_BASE_URL=https://second-provider.example/sub
-SECOND_SUBSCRIPTION_PROXY=direct
 XRAY_OUTBOUND_LINK='vless://YOUR_UUID@proxy-host.example:443?type=ws&encryption=none&path=%2F&host=proxy-host.example&security=tls&fp=chrome&alpn=h2%2Chttp%2F1.1&sni=proxy-host.example#proxy-name'
 
 HTTPS_ENABLED=false
@@ -111,30 +111,6 @@ WORKER_CONCURRENCY=5
 
 ADMIN_USERNAME=
 ADMIN_PASSWORD=
-
-FIRST_PANEL_NAME=first-panel
-FIRST_PANEL_ADD_CLIENT_URL=https://first-panel.example/secret/panel/api/inbounds/addClient
-FIRST_PANEL_COOKIE=
-FIRST_PANEL_INBOUND_ID=1
-FIRST_PANEL_PROXY=xray
-FIRST_PANEL_TOTAL_GB_RATIO=1
-FIRST_PANEL_QUOTA_DIVISOR=1
-
-SECOND_PANEL_NAME=second-panel
-SECOND_PANEL_ADD_CLIENT_URL=https://second-panel.example/secret/panel/api/inbounds/addClient
-SECOND_PANEL_COOKIE=
-SECOND_PANEL_INBOUND_ID=1
-SECOND_PANEL_PROXY=direct
-SECOND_PANEL_TOTAL_GB_RATIO=1
-SECOND_PANEL_QUOTA_DIVISOR=1
-
-THIRD_PANEL_NAME=third-panel
-THIRD_PANEL_ADD_CLIENT_URL=https://third-panel.example/secret/panel/api/inbounds/addClient
-THIRD_PANEL_COOKIE=
-THIRD_PANEL_INBOUND_ID=1
-THIRD_PANEL_PROXY=direct
-THIRD_PANEL_TOTAL_GB_RATIO=1
-THIRD_PANEL_QUOTA_DIVISOR=1
 ```
 
 Shell environment variables override `.env` values. For example:
@@ -142,6 +118,10 @@ Shell environment variables override `.env` values. For example:
 ```sh
 FIRST_SUBSCRIPTION_PROXY=direct npm run print:plain -- YOUR_TOKEN
 ```
+
+`FIRST_SUBSCRIPTION_*`, `SECOND_SUBSCRIPTION_*`, and `THIRD_SUBSCRIPTION_*` are still accepted as fallback subscription sources for older installs. SQLite subscription sources are listed first, and env sources whose `baseUrl` and route are not already configured in SQLite are appended. New sources should be added on each inbound in `/settings`.
+
+If an existing `.env` contains `FIRST_PANEL_*`, `SECOND_PANEL_*`, or `THIRD_PANEL_*`, the first startup creates the SQLite database and migrates those panel/inbound records once. After that, edit them in `/settings`.
 
 If Xray is only inside this project and not installed globally, set:
 
@@ -185,6 +165,33 @@ The server also sends baseline production headers: `Content-Security-Policy`, `X
 
 ## Create 3x-ui Clients
 
+Set `ADMIN_USERNAME` and `ADMIN_PASSWORD`, then open the settings page first and add panels plus inbounds:
+
+```text
+https://your-domain.com/settings
+```
+
+`/settings` is blocked unless admin auth is configured and the request is authenticated, because it stores panel cookies.
+
+Panel fields:
+
+- `Name`
+- `Add Client URL`, ending with `/api/inbounds/addClient`
+- `Cookie`
+- `API Route`, either `direct` or `xray`
+- `Enabled`
+
+Inbound fields:
+
+- `Panel`
+- `Inbound ID`
+- optional `Name`
+- optional `Subscription Base URL`, `Subscription Name`, and `Subscription Route`
+- `Total GB Ratio`
+- `Quota Divisor`
+- `XTLS Vision Flow`, off by default
+- `Enabled`
+
 Open the create-client page:
 
 ```text
@@ -197,23 +204,25 @@ Open the created-clients page:
 https://your-domain.com/clients
 ```
 
-The page creates the same client on every configured panel. `FIRST_PANEL_PROXY=xray` sends that panel's `addClient` request through the Xray outbound. `SECOND_PANEL_PROXY=direct` and `THIRD_PANEL_PROXY=direct` send those panel requests directly.
+The page creates the same client on every enabled configured inbound. A panel with `API Route=xray` sends panel API requests through the Xray outbound. A panel with `API Route=direct` sends panel API requests directly.
 
 The form matches the 3x-ui add-client modal fields: Enabled, Email, ID, Subscription, Comment, Total Flow, Start After First Use, and Duration. The API payload still includes `tgId: ""` because 3x-ui expects that key even when Telegram ID is not shown in the modal.
 
-If multiple configured panels use the same panel URL, the create-client request adds a numeric suffix to the email for that shared panel database. For example, `client@example.com` becomes `client@example.com-1` and `client@example.com-2` for two matching panel URLs. The subscription ID stays the same across panels.
+When an inbound has `XTLS Vision Flow` enabled in `/settings`, client creation sends `flow: "xtls-rprx-vision"` for that inbound. Inbounds without the toggle keep `flow: ""`.
 
-`Total Flow` is the base quota from the form. Each panel divides it by its own ratio:
+If multiple configured inbounds use the same panel URL, the create-client request adds a numeric suffix to the email for that shared panel database. For example, `client@example.com` becomes `client@example.com-1` and `client@example.com-2` for two matching panel URLs. The subscription ID stays the same across inbounds.
 
-```sh
-FIRST_PANEL_TOTAL_GB_RATIO=1
-SECOND_PANEL_TOTAL_GB_RATIO=2
-THIRD_PANEL_TOTAL_GB_RATIO=1
+`Total Flow` is the base quota from the form. Each inbound divides it by its own ratio:
+
+```text
+first inbound ratio = 1
+second inbound ratio = 2
+third inbound ratio = 1
 ```
 
-With those values, entering `5` in `Total Flow` sends `5 GiB` to the first panel, `2.5 GiB` to the second panel, and `5 GiB` to the third panel. `0` still means unlimited for every panel.
+With those values, entering `5` in `Total Flow` sends `5 GiB` to the first inbound, `2.5 GiB` to the second inbound, and `5 GiB` to the third inbound. `0` still means unlimited for every inbound.
 
-`*_PANEL_QUOTA_DIVISOR` applies the same quota normalization used by the subscription page to the quota worker. Use `2` when a panel reports a `20 GiB` quota for two returned configs but the effective limit should be `10 GiB`. Uploaded/downloaded usage stays raw; only total quota is divided.
+`Quota Divisor` applies the same quota normalization used by the subscription page to the quota worker. Use `2` when a panel reports a `20 GiB` quota for two returned configs but the effective limit should be `10 GiB`. Uploaded/downloaded usage stays raw; only total quota is divided.
 
 After the panel requests finish, the page shows the aggregated subscription generated by this app:
 
@@ -223,25 +232,22 @@ https://your-domain.com/sub/CLIENT_SUBSCRIPTION_ID
 
 It also shows a QR code plus links for the info page, forced base64 output, and plain decoded output.
 
-Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before exposing this page outside localhost. The page uses HTTP Basic Auth when both values are configured.
+Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before exposing create/client pages outside localhost. Those pages use HTTP Basic Auth when both values are configured.
 
-The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every configured inbound, supports live filtering by email or subscription ID, and starts with normalized panel usage so the page can respond quickly. Opening a client's details loads the same subscription-header usage used by `/sub/:token` for that client. Use `/clients?usage=subscription` when you need the older eager refresh that loads subscription usage for every client before rendering. Its edit form can enable or disable the client, add base traffic using each panel's `TOTAL_GB_RATIO`, set an expiry date, or clear expiry while preserving all other client fields.
+The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every enabled configured inbound, supports live filtering by email or subscription ID, and starts with normalized panel usage so the page can respond quickly. Opening a client's details loads the same subscription-header usage used by `/sub/:token` for that client. Use `/clients?usage=subscription` when you need the older eager refresh that loads subscription usage for every client before rendering. Its edit form can enable or disable the client, add base traffic using each inbound's `Total GB Ratio`, set an expiry date, or clear expiry while preserving all other client fields.
 
 Panel mutations run Xray-routed panels before direct panels. Each Xray mutation gets the initial attempt plus three retries; if an Xray mutation still fails, later panel mutations are skipped so direct panels are not updated alone.
 
-Panel cookies are sensitive. Keep them only in `.env`, which is ignored by git:
+Panel cookies are sensitive. They are stored in the SQLite database, which is ignored by git through `*.sqlite3`:
 
-```sh
-FIRST_PANEL_COOKIE='3x-ui=...; lang=en-US'
-SECOND_PANEL_COOKIE='3x-ui=...; lang=en-US'
-THIRD_PANEL_COOKIE='3x-ui=...; lang=en-US'
+```text
+./data/subscription-aggregator.sqlite3
 ```
 
 ## Notes
 
-- The VLESS link is used as an Xray outbound. The app creates a local HTTP inbound only so Node can proxy the first subscription request through Xray.
-- Only the first source uses Xray. The second source always uses a direct HTTPS request.
-- For troubleshooting, run `FIRST_SUBSCRIPTION_PROXY=direct npm run print:plain -- YOUR_TOKEN` to verify the first subscription URL without Xray.
+- The VLESS link is used as an Xray outbound. The app creates a local HTTP inbound only so Node can proxy Xray-routed subscription and panel requests.
+- Each subscription source chooses its own route. Set an inbound subscription route to `direct` in `/settings` to verify that source without Xray.
 - Browser requests to `/sub/YOUR_TOKEN` show a local info page with a QR code, source usage, remaining quota, and merged links.
 - If one upstream panel returns multiple config links for the same subscription, the displayed total quota is divided by the link count, while uploaded/downloaded usage stays as reported by the upstream.
 - Output is a normal V2Ray subscription format: base64 of newline-separated links.

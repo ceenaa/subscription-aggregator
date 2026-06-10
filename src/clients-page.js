@@ -831,6 +831,7 @@ export function renderClientsPage({
       </div>
       <nav aria-label="Pages">
         <a href="/inbounds">Create</a>
+        <a href="/settings">Settings</a>
         <a href="/clients">Refresh</a>
       </nav>
     </header>

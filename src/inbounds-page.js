@@ -110,7 +110,7 @@ function subscriptionResult(subscription) {
     <section class="subscription-result">
       <div>
         <h2>Aggregated Subscription</h2>
-        <p>Use this link for the client created on every configured panel.</p>
+        <p>Use this link for the client created on every configured inbound.</p>
       </div>
       <div class="subscription-layout">
         <div class="qr-box">${renderQrSvg(subscription.url)}</div>
@@ -181,6 +181,10 @@ export function renderInboundsPage({
     }
 
     header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: end;
       padding-bottom: 22px;
       border-bottom: 1px solid var(--line);
     }
@@ -197,6 +201,27 @@ export function renderInboundsPage({
     header p {
       margin-top: 10px;
       color: var(--muted);
+    }
+
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    nav a {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      border: 1px solid rgba(45, 212, 191, 0.55);
+      border-radius: 8px;
+      color: #99f6e4;
+      background: rgba(20, 184, 166, 0.1);
+      text-decoration: none;
+      font-weight: 750;
     }
 
     form,
@@ -477,6 +502,15 @@ export function renderInboundsPage({
         grid-template-columns: 1fr;
       }
 
+      header {
+        grid-template-columns: 1fr;
+        align-items: start;
+      }
+
+      nav {
+        justify-content: flex-start;
+      }
+
       .field-action {
         grid-template-columns: 1fr;
       }
@@ -486,8 +520,14 @@ export function renderInboundsPage({
 <body>
   <main>
     <header>
-      <h1>Create Inbound Clients</h1>
-      <p>Add the same client to every configured 3x-ui panel. Each panel can use its own direct or Xray route.</p>
+      <div>
+        <h1>Create Inbound Clients</h1>
+        <p>Add the same client to every configured 3x-ui inbound. Each panel can use its own direct or Xray route.</p>
+      </div>
+      <nav aria-label="Pages">
+        <a href="/clients">Clients</a>
+        <a href="/settings">Settings</a>
+      </nav>
     </header>
 
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}

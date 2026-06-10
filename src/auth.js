@@ -36,3 +36,7 @@ export function isAuthorized(config, request) {
     safeEqual(credentials.password, config.admin.password)
   );
 }
+
+export function isAdminAuthorized(config, request) {
+  return isAdminAuthEnabled(config) && isAuthorized(config, request);
+}

@@ -7,7 +7,7 @@ import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 
 function requirePanelField(panel, field) {
   if (!panel[field]) {
-    throw new Error(`${panel.name} panel is missing ${field} in .env`);
+    throw new Error(`${panel.name} panel is missing ${field}`);
   }
 
   return panel[field];
@@ -375,8 +375,8 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
   const logger = options.logger || console;
   const concurrency = options.concurrency || 5;
   const configuredPanels = panels.filter(Boolean);
-  if (configuredPanels.length < 2) {
-    throw new Error('At least two panels must be configured before running the quota worker');
+  if (configuredPanels.length < 1) {
+    throw new Error('At least one configured panel inbound is required before running the quota worker');
   }
 
   const panelStates = await Promise.all(configuredPanels.map((panel) => fetchPanelInbound(runtime, panel)));

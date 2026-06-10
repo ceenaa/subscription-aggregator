@@ -6,7 +6,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function requirePanelField(panel, field) {
   if (!panel[field]) {
-    throw new Error(`${panel.name} panel is missing ${field} in .env`);
+    throw new Error(`${panel.name} panel is missing ${field}`);
   }
 
   return panel[field];
@@ -53,6 +53,10 @@ function parseExpiryTime(value, startAfterFirstUse) {
 
 function parseEnabled(value) {
   return value !== 'false';
+}
+
+function normalizeClientFlow(value) {
+  return value === 'xtls-rprx-vision' ? value : '';
 }
 
 function panelEmailUniquenessKey(panel) {
@@ -127,9 +131,10 @@ export function buildClientSettings(input, options = {}) {
   const durationDays = input.durationDays ?? input.expiryDays ?? '0';
   const startAfterFirstUse = input.startAfterFirstUse === 'true';
   const totalGbRatio = options.totalGbRatio ?? input.totalGbRatio ?? 1;
+  const clientFlow = normalizeClientFlow(options.clientFlow ?? input.clientFlow);
   const client = {
     id: input.clientId || randomUUID(),
-    flow: '',
+    flow: clientFlow,
     email: input.email || '',
     limitIp: parseInteger(input.limitIp, 'limitIp', 0),
     totalGB: parseQuotaBytes(input.totalGB, totalGbRatio),
@@ -153,7 +158,10 @@ export function buildAddClientRequest(panel, input) {
   const addClientUrl = requirePanelField(panel, 'addClientUrl');
   const inboundId = requirePanelField(panel, 'inboundId');
   const url = new URL(addClientUrl);
-  const settings = buildClientSettings(input, { totalGbRatio: panel.totalGbRatio });
+  const settings = buildClientSettings(input, {
+    clientFlow: panel.clientFlow,
+    totalGbRatio: panel.totalGbRatio
+  });
   const body = new URLSearchParams({
     id: inboundId,
     settings: JSON.stringify(settings, null, 2)

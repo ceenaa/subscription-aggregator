@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { loadDotEnv } from './env.js';
-import { loadConfig } from './config.js';
+import { loadConfig, refreshConfiguredTargets } from './config.js';
 import {
   aggregateSubscriptions,
   encodeSubscriptionLinks,
@@ -18,7 +18,7 @@ import { renderSubscriptionPage } from './page.js';
 import { formatSubscriptionUserInfo, summarizeNormalizedUsage } from './usage.js';
 import { buildResponseHeaders } from './response-headers.js';
 import { absoluteSubscriptionUrl, getRequestUrl } from './url-context.js';
-import { isAuthorized, isAdminAuthEnabled } from './auth.js';
+import { isAuthorized, isAdminAuthEnabled, isAdminAuthorized } from './auth.js';
 import { addClientToPanels, defaultInboundFormValues } from './panel-client.js';
 import { renderInboundsPage } from './inbounds-page.js';
 import {
@@ -28,6 +28,16 @@ import {
 } from './panel-clients.js';
 import { renderClientsPage } from './clients-page.js';
 import { CLIENTS_SCRIPT, COPY_SCRIPT, INBOUNDS_SCRIPT } from './assets.js';
+import {
+  createInbound,
+  createPanel,
+  deleteInbound,
+  deletePanel,
+  loadSettingsData,
+  updateInbound,
+  updatePanel
+} from './config-store.js';
+import { renderSettingsPage } from './settings-page.js';
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const PROJECT_ROOT = path.dirname(path.dirname(MODULE_PATH));
@@ -98,6 +108,11 @@ function sendNoContent(config, request, response, statusCode = 204) {
   response.end();
 }
 
+function sendRedirect(config, request, response, location, statusCode = 303) {
+  response.writeHead(statusCode, buildResponseHeaders(config, request, '', { Location: location }));
+  response.end();
+}
+
 function sendUnauthorized(config, request, response) {
   sendText(config, request, response, 401, 'Authentication required.\n', {
     'WWW-Authenticate': 'Basic realm="Subscription Aggregator"'
@@ -105,7 +120,7 @@ function sendUnauthorized(config, request, response) {
 }
 
 function panelsConfigured(config) {
-  return config.panels.every((panel) => panel.addClientUrl && panel.inboundId);
+  return config.panels.length > 0 && config.panels.every((panel) => panel.addClientUrl && panel.inboundId);
 }
 
 function readRequestBody(request, maxBytes = 1024 * 1024) {
@@ -166,6 +181,104 @@ function clientEditValuesFromBody(body) {
     expiryTime: params.get('expiryTime') || '',
     clearExpiry: params.get('clearExpiry') === 'true'
   };
+}
+
+function panelValuesFromBody(body) {
+  const params = new URLSearchParams(body);
+  return {
+    name: params.get('name') || '',
+    addClientUrl: params.get('addClientUrl') || '',
+    cookie: params.get('cookie') || '',
+    proxy: params.get('proxy') || '',
+    enabled: params.get('enabled') === 'true'
+  };
+}
+
+function inboundValuesFromBody(body) {
+  const params = new URLSearchParams(body);
+  return {
+    panelId: params.get('panelId') || '',
+    name: params.get('name') || '',
+    inboundId: params.get('inboundId') || '',
+    subscriptionName: params.get('subscriptionName') || '',
+    subscriptionBaseUrl: params.get('subscriptionBaseUrl') || '',
+    subscriptionProxy: params.get('subscriptionProxy') || '',
+    totalGbRatio: params.get('totalGbRatio') || '',
+    quotaDivisor: params.get('quotaDivisor') || '',
+    xtlsVisionFlow: params.get('xtlsVisionFlow') === 'true',
+    enabled: params.get('enabled') === 'true'
+  };
+}
+
+function settingsIdFromBody(body) {
+  return new URLSearchParams(body).get('id') || '';
+}
+
+function renderSettings(config, request, response, statusCode, options = {}) {
+  const data = loadSettingsData(config.database.path);
+  sendHtml(
+    config,
+    request,
+    response,
+    statusCode,
+    renderSettingsPage({
+      ...data,
+      databasePath: config.database.path,
+      ...options
+    })
+  );
+}
+
+function redirectToSettings(config, request, response, message) {
+  sendRedirect(config, request, response, `/settings?message=${encodeURIComponent(message)}`);
+}
+
+async function handleSettingsPost(config, request, response, pathname) {
+  const body = await readRequestBody(request);
+
+  if (pathname === '/settings/panels') {
+    createPanel(config.database.path, panelValuesFromBody(body));
+    refreshConfiguredTargets(config);
+    redirectToSettings(config, request, response, 'Panel added.');
+    return;
+  }
+
+  if (pathname === '/settings/panels/edit') {
+    updatePanel(config.database.path, settingsIdFromBody(body), panelValuesFromBody(body));
+    refreshConfiguredTargets(config);
+    redirectToSettings(config, request, response, 'Panel updated.');
+    return;
+  }
+
+  if (pathname === '/settings/panels/delete') {
+    deletePanel(config.database.path, settingsIdFromBody(body));
+    refreshConfiguredTargets(config);
+    redirectToSettings(config, request, response, 'Panel deleted.');
+    return;
+  }
+
+  if (pathname === '/settings/inbounds') {
+    createInbound(config.database.path, inboundValuesFromBody(body));
+    refreshConfiguredTargets(config);
+    redirectToSettings(config, request, response, 'Inbound added.');
+    return;
+  }
+
+  if (pathname === '/settings/inbounds/edit') {
+    updateInbound(config.database.path, settingsIdFromBody(body), inboundValuesFromBody(body));
+    refreshConfiguredTargets(config);
+    redirectToSettings(config, request, response, 'Inbound updated.');
+    return;
+  }
+
+  if (pathname === '/settings/inbounds/delete') {
+    deleteInbound(config.database.path, settingsIdFromBody(body));
+    refreshConfiguredTargets(config);
+    redirectToSettings(config, request, response, 'Inbound deleted.');
+    return;
+  }
+
+  sendJson(config, request, response, 404, { error: 'Unknown settings action' });
 }
 
 async function loadClientsView(config, runtime, request, options = {}) {
@@ -254,6 +367,52 @@ export async function createServer(config = loadConfig()) {
         return;
       }
 
+      if (url.pathname === '/settings' || url.pathname.startsWith('/settings/')) {
+        if (!isAdminAuthEnabled(config)) {
+          sendText(
+            config,
+            request,
+            response,
+            403,
+            'ADMIN_USERNAME and ADMIN_PASSWORD must be set before using /settings.\n'
+          );
+          return;
+        }
+
+        if (!isAdminAuthorized(config, request)) {
+          sendUnauthorized(config, request, response);
+          return;
+        }
+
+        if (url.pathname === '/settings') {
+          if (request.method !== 'GET' && request.method !== 'HEAD') {
+            sendJson(config, request, response, 405, { error: 'Only GET and HEAD are supported' }, {
+              Allow: 'GET, HEAD, OPTIONS'
+            });
+            return;
+          }
+
+          renderSettings(config, request, response, 200, {
+            message: url.searchParams.get('message') || ''
+          });
+          return;
+        }
+
+        if (request.method !== 'POST') {
+          sendJson(config, request, response, 405, { error: 'Only POST is supported' }, {
+            Allow: 'POST, OPTIONS'
+          });
+          return;
+        }
+
+        try {
+          await handleSettingsPost(config, request, response, url.pathname);
+        } catch (error) {
+          renderSettings(config, request, response, 400, { error: error.message });
+        }
+        return;
+      }
+
       if (url.pathname === '/inbounds') {
         if (!isAuthorized(config, request)) {
           sendUnauthorized(config, request, response);
@@ -269,7 +428,7 @@ export async function createServer(config = loadConfig()) {
             renderInboundsPage({
               values: defaultInboundFormValues(),
               error:
-                'Panel configuration is incomplete. Set ADD_CLIENT_URL and INBOUND_ID for every configured panel in .env.'
+                'No enabled panel inbounds are fully configured. Add panels and inbounds in /settings.'
             })
           );
           return;
@@ -373,7 +532,7 @@ export async function createServer(config = loadConfig()) {
             500,
             renderClientsPage({
               error:
-                'Panel configuration is incomplete. Set ADD_CLIENT_URL and INBOUND_ID for every configured panel in .env.'
+                'No enabled panel inbounds are fully configured. Add panels and inbounds in /settings.'
             })
           );
           return;
@@ -547,6 +706,7 @@ async function main() {
     console.log(`base64 subscription: ${origin}/sub/:token`);
     console.log(`plain links:          ${origin}/sub/plain/:token`);
     console.log(`created clients:      ${origin}/clients`);
+    console.log(`panel settings:       ${origin}/settings`);
   });
 
   const shutdown = async () => {

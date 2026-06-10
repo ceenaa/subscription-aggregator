@@ -198,7 +198,7 @@ export function linksWithPanelRatioNames(results, panels = []) {
   const links = [];
 
   results.forEach((result, index) => {
-    const ratio = panels[index]?.totalGbRatio ?? result.source?.totalGbRatio ?? 1;
+    const ratio = result.source?.totalGbRatio ?? panels[index]?.totalGbRatio ?? 1;
     const suffix = `⚖️ مصرف با ضریب ${formatQuotaRatio(ratio)}`;
 
     for (const link of result.links) {

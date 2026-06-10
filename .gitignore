@@ -3,6 +3,8 @@ node_modules/
 .DS_Store
 .idea/
 *.log
+*.sqlite
+*.sqlite3
 *.zip
 *.pem
 *.key

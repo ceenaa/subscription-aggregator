@@ -7,25 +7,28 @@ import {
 import { startXrayHttpProxy } from './xray.js';
 
 export async function createSubscriptionFetcher(config) {
-  const needsXray = [...config.sources, ...(config.panels || [])].some(
-    (target) => target.proxy === 'xray'
-  );
-  const xrayProxy = needsXray
-    ? await startXrayHttpProxy({
-        vlessLink: config.xrayOutboundLink,
-        xrayBin: config.xrayBin
-      })
-    : null;
+  let xrayProxy = null;
+
+  async function ensureXrayProxy(target) {
+    if (xrayProxy) return xrayProxy;
+    if (!config.xrayOutboundLink) {
+      throw new Error(`${target.name} requires Xray, but XRAY_OUTBOUND_LINK is not configured`);
+    }
+
+    xrayProxy = await startXrayHttpProxy({
+      vlessLink: config.xrayOutboundLink,
+      xrayBin: config.xrayBin
+    });
+    return xrayProxy;
+  }
 
   return {
     async fetch(source) {
       if (source.proxy === 'xray') {
-        if (!xrayProxy) {
-          throw new Error(`Source ${source.name} requires Xray, but Xray is not running`);
-        }
+        const proxy = await ensureXrayProxy(source);
 
         return fetchResponseViaHttpProxy(source.url, {
-          proxyPort: xrayProxy.port,
+          proxyPort: proxy.port,
           timeoutMs: config.requestTimeoutMs
         });
       }
@@ -37,13 +40,11 @@ export async function createSubscriptionFetcher(config) {
 
     async request(target, options) {
       if (target.proxy === 'xray') {
-        if (!xrayProxy) {
-          throw new Error(`Target ${target.name} requires Xray, but Xray is not running`);
-        }
+        const proxy = await ensureXrayProxy(target);
 
         return requestResponseViaHttpProxy(target.url, {
           ...options,
-          proxyPort: xrayProxy.port,
+          proxyPort: proxy.port,
           timeoutMs: config.requestTimeoutMs
         });
       }

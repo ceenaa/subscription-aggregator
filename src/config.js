@@ -1,3 +1,9 @@
+import {
+  loadDatabaseConfiguration,
+  readLegacySourceConfigs,
+  resolveDatabasePath
+} from './config-store.js';
+
 function readRequiredEnv(env, name) {
   const value = env[name];
   if (!value) {
@@ -30,18 +36,6 @@ function readOptionalIntegerEnv(env, name, fallback) {
   return parsed;
 }
 
-function readOptionalNumberEnv(env, name, fallback) {
-  const value = env[name];
-  if (!value) return fallback;
-
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive number`);
-  }
-
-  return parsed;
-}
-
 function readBooleanEnv(env, name, fallback = false) {
   const value = env[name];
   if (value === undefined || value === '') return fallback;
@@ -59,43 +53,40 @@ function readCsvEnv(env, name) {
     .filter(Boolean);
 }
 
-function hasPanelConfig(env, prefix) {
-  return [
-    'NAME',
-    'ADD_CLIENT_URL',
-    'COOKIE',
-    'INBOUND_ID',
-    'PROXY',
-    'TOTAL_GB_RATIO',
-    'QUOTA_DIVISOR',
-    'CONFIG_COUNT'
-  ].some((field) => env[`${prefix}_PANEL_${field}`] !== undefined);
+function sourceKey(source) {
+  return `${source.baseUrl || ''}\u0000${source.proxy || ''}`;
 }
 
-function readPanelConfig(env, prefix, defaults) {
-  const configCount = readOptionalNumberEnv(env, `${prefix}_PANEL_CONFIG_COUNT`, 1);
+function mergeSources(databaseSources, envSources) {
+  const merged = [...databaseSources];
+  const seen = new Set(databaseSources.map(sourceKey));
 
-  return {
-    name: env[`${prefix}_PANEL_NAME`] || defaults.name,
-    addClientUrl: env[`${prefix}_PANEL_ADD_CLIENT_URL`] || '',
-    cookie: env[`${prefix}_PANEL_COOKIE`] || '',
-    inboundId: env[`${prefix}_PANEL_INBOUND_ID`] || '',
-    proxy: env[`${prefix}_PANEL_PROXY`] || defaults.proxy,
-    totalGbRatio: readOptionalNumberEnv(env, `${prefix}_PANEL_TOTAL_GB_RATIO`, 1),
-    quotaDivisor: readOptionalNumberEnv(env, `${prefix}_PANEL_QUOTA_DIVISOR`, configCount)
-  };
-}
+  for (const source of envSources) {
+    const key = sourceKey(source);
+    if (seen.has(key)) continue;
 
-export function loadConfig(env = process.env) {
-  const httpsEnabled = readBooleanEnv(env, 'HTTPS_ENABLED', false);
-  const panels = [
-    readPanelConfig(env, 'FIRST', { name: 'first', proxy: 'xray' }),
-    readPanelConfig(env, 'SECOND', { name: 'second', proxy: 'direct' })
-  ];
-
-  if (hasPanelConfig(env, 'THIRD')) {
-    panels.push(readPanelConfig(env, 'THIRD', { name: 'third', proxy: 'direct' }));
+    seen.add(key);
+    merged.push(source);
   }
+
+  return merged;
+}
+
+function databasePathForConfig(env, options) {
+  if (options.databasePath) return options.databasePath;
+  if (env.SQLITE_DB_PATH) return env.SQLITE_DB_PATH;
+  if (env.DATABASE_PATH) return env.DATABASE_PATH;
+  return env === process.env ? undefined : ':memory:';
+}
+
+export function loadConfig(env = process.env, options = {}) {
+  const httpsEnabled = readBooleanEnv(env, 'HTTPS_ENABLED', false);
+  const databaseEnabled = options.database !== false;
+  const databasePath = resolveDatabasePath(databasePathForConfig(env, options));
+  const databaseConfig = databaseEnabled
+    ? loadDatabaseConfiguration({ databasePath, legacyEnv: env })
+    : { panels: [], sources: [] };
+  const envSources = readLegacySourceConfigs(env);
 
   return {
     port: readIntegerEnv(env, 'PORT'),
@@ -121,20 +112,27 @@ export function loadConfig(env = process.env) {
       username: env.ADMIN_USERNAME || '',
       password: env.ADMIN_PASSWORD || ''
     },
-    xrayBin: readRequiredEnv(env, 'XRAY_BIN'),
-    xrayOutboundLink: readRequiredEnv(env, 'XRAY_OUTBOUND_LINK'),
-    sources: [
-      {
-        name: env.FIRST_SUBSCRIPTION_NAME || 'wcloud',
-        baseUrl: readRequiredEnv(env, 'FIRST_SUBSCRIPTION_BASE_URL'),
-        proxy: env.FIRST_SUBSCRIPTION_PROXY || 'xray'
-      },
-      {
-        name: env.SECOND_SUBSCRIPTION_NAME || 'nimcloud',
-        baseUrl: readRequiredEnv(env, 'SECOND_SUBSCRIPTION_BASE_URL'),
-        proxy: env.SECOND_SUBSCRIPTION_PROXY || 'direct'
-      }
-    ],
-    panels
+    xrayBin: env.XRAY_BIN || 'xray',
+    xrayOutboundLink: env.XRAY_OUTBOUND_LINK || '',
+    database: {
+      enabled: databaseEnabled,
+      path: databasePath
+    },
+    envSources,
+    sources: mergeSources(databaseConfig.sources, envSources),
+    panels: databaseConfig.panels
   };
+}
+
+export function refreshConfiguredTargets(config, env = process.env) {
+  if (!config.database?.enabled) return config;
+
+  const databaseConfig = loadDatabaseConfiguration({
+    databasePath: config.database.path,
+    legacyEnv: env
+  });
+
+  config.panels = databaseConfig.panels;
+  config.sources = mergeSources(databaseConfig.sources, config.envSources || []);
+  return config;
 }
