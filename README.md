@@ -48,7 +48,7 @@ normalizedUsed = sum(panelUsed * scale)
 disable when normalizedUsed >= higherTotal
 ```
 
-At the end, it logs the checked count, fully disabled clients, partially disabled clients, and skipped clients. The worker retries failed disable requests before reporting a partial disable. A partial disable means at least one panel was updated but another active panel still could not be updated, or the failed side cannot be updated because required client data is missing. The update request preserves the client settings returned by 3x-ui and only changes `enable` to `false`.
+At the end, it logs the checked count, fully disabled clients, partially disabled clients, and skipped clients. The worker retries failed disable requests before reporting a partial disable, and each successful response is verified by reloading that panel inbound and confirming the client is no longer active. A partial disable means at least one panel was updated but another active panel still could not be updated, or the failed side cannot be updated because required client data is missing. In the JSON output, `panels` are the panels updated in the current run, while `alreadyDisabledPanels` are panels that were already off before this run. The update request preserves the client settings returned by 3x-ui and only changes `enable` to `false`.
 
 To run it every minute with `crontab`, use absolute paths and a lock so overlapping runs do not stack up:
 
@@ -118,6 +118,8 @@ Shell environment variables override `.env` values. For example:
 ```sh
 FIRST_SUBSCRIPTION_PROXY=direct npm run print:plain -- YOUR_TOKEN
 ```
+
+`REQUEST_TIMEOUT_MS` is applied as a hard deadline to panel and subscription HTTP requests, including direct and Xray-proxied requests.
 
 `FIRST_SUBSCRIPTION_*`, `SECOND_SUBSCRIPTION_*`, and `THIRD_SUBSCRIPTION_*` are still accepted as fallback subscription sources for older installs. SQLite subscription sources are listed first, and env sources whose `baseUrl` and route are not already configured in SQLite are appended. New sources should be added on each inbound in `/settings`.
 

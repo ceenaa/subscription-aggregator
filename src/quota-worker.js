@@ -278,12 +278,34 @@ export async function fetchPanelInbound(runtime, panel) {
 async function disableClient(runtime, entry) {
   const request = buildUpdateClientRequest(entry.panel, entry.inbound, entry.client, entry.stat);
   const payload = await requestPanelJson(runtime, entry.panel, request);
+  const verifiedState = await fetchPanelInbound(runtime, entry.panel);
+  if (!verifiedState.inbound) {
+    throw new Error(`${entry.panel.name} inbound ${entry.panel.inboundId} missing after update`);
+  }
+
+  const verifiedEntry = verifiedState.clients.get(entry.subId);
+  if (!verifiedEntry) {
+    throw new Error(`${entry.panel.name} client ${entry.subId} missing after update`);
+  }
+
+  if (clientLooksEnabled(verifiedEntry)) {
+    throw new Error(`${entry.panel.name} client ${entry.subId} still active after update`);
+  }
 
   return {
     panel: entry.panel.name,
     subId: entry.subId,
     email: entry.email,
     response: payload.msg || 'updated'
+  };
+}
+
+function alreadyDisabledPanel(entry) {
+  return {
+    panel: entry.panel.name,
+    subId: entry.subId,
+    email: entry.email,
+    response: 'already disabled'
   };
 }
 
@@ -361,7 +383,10 @@ async function processQuotaGroup(runtime, group, options) {
     subId: group.subId,
     email: entries.find((entry) => entry.email)?.email || '',
     reasons: evaluation.reasons,
-    panels: panelUpdates
+    panels: panelUpdates,
+    alreadyDisabledPanels: entries
+      .filter((entry) => !clientLooksEnabled(entry))
+      .map(alreadyDisabledPanel)
   };
 
   return {

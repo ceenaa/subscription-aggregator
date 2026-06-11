@@ -113,8 +113,10 @@ function readAllFromSocket(socket, timeoutMs) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let totalLength = 0;
+    let deadline = null;
 
     const cleanup = () => {
+      if (deadline) clearTimeout(deadline);
       socket.off('data', onData);
       socket.off('end', onEnd);
       socket.off('error', onError);
@@ -142,6 +144,7 @@ function readAllFromSocket(socket, timeoutMs) {
       reject(new Error(`Request timed out after ${timeoutMs}ms`));
     };
 
+    deadline = setTimeout(onTimeout, timeoutMs);
     socket.setTimeout(timeoutMs);
     socket.on('data', onData);
     socket.once('end', onEnd);
@@ -154,8 +157,10 @@ function readHttpHeader(socket, timeoutMs) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let totalLength = 0;
+    let deadline = null;
 
     const cleanup = () => {
+      if (deadline) clearTimeout(deadline);
       socket.off('data', onData);
       socket.off('error', onError);
       socket.off('timeout', onTimeout);
@@ -186,6 +191,7 @@ function readHttpHeader(socket, timeoutMs) {
       reject(new Error(`Proxy CONNECT timed out after ${timeoutMs}ms`));
     };
 
+    deadline = setTimeout(onTimeout, timeoutMs);
     socket.setTimeout(timeoutMs);
     socket.on('data', onData);
     socket.once('error', onError);
@@ -196,8 +202,10 @@ function readHttpHeader(socket, timeoutMs) {
 function openHttpTunnel({ proxyHost, proxyPort, targetHost, targetPort, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(proxyPort, proxyHost);
+    let deadline = null;
 
     const cleanup = () => {
+      if (deadline) clearTimeout(deadline);
       socket.off('connect', onConnect);
       socket.off('error', onError);
       socket.off('timeout', onTimeout);
@@ -242,6 +250,7 @@ function openHttpTunnel({ proxyHost, proxyPort, targetHost, targetPort, timeoutM
       reject(new Error(`Proxy connection timed out after ${timeoutMs}ms`));
     };
 
+    deadline = setTimeout(onTimeout, timeoutMs);
     socket.setTimeout(timeoutMs);
     socket.once('connect', onConnect);
     socket.once('error', onError);
@@ -256,14 +265,34 @@ function sendHttpsRequestOverSocket(socket, url, timeoutMs, options = {}) {
       servername: url.hostname,
       ALPNProtocols: ['http/1.1']
     });
+    const deadline = setTimeout(onTimeout, timeoutMs);
+    let settled = false;
 
     const cleanup = () => {
+      clearTimeout(deadline);
       tlsSocket.off('secureConnect', onSecureConnect);
       tlsSocket.off('error', onError);
+      tlsSocket.off('timeout', onTimeout);
+    };
+
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (!tlsSocket.destroyed) tlsSocket.destroy();
+      resolve(value);
+    };
+
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (!tlsSocket.destroyed) tlsSocket.destroy();
+      reject(error);
     };
 
     const onSecureConnect = async () => {
-      cleanup();
+      tlsSocket.off('secureConnect', onSecureConnect);
       try {
         const { body, headers } = requestHeaders(url, options);
         tlsSocket.write(
@@ -277,19 +306,24 @@ function sendHttpsRequestOverSocket(socket, url, timeoutMs, options = {}) {
         if (body) tlsSocket.write(body);
 
         const responseBuffer = await readAllFromSocket(tlsSocket, timeoutMs);
-        resolve(parseRawHttpResponse(responseBuffer));
+        finishResolve(parseRawHttpResponse(responseBuffer));
       } catch (error) {
-        reject(error);
+        finishReject(error);
       }
     };
 
     const onError = (error) => {
-      cleanup();
-      reject(error);
+      finishReject(error);
     };
 
+    function onTimeout() {
+      finishReject(new Error(`TLS request timed out after ${timeoutMs}ms`));
+    };
+
+    tlsSocket.setTimeout(timeoutMs);
     tlsSocket.once('secureConnect', onSecureConnect);
     tlsSocket.once('error', onError);
+    tlsSocket.once('timeout', onTimeout);
   });
 }
 
@@ -297,7 +331,65 @@ function requestDirect(url, timeoutMs, options = {}) {
   return new Promise((resolve, reject) => {
     const transport = url.protocol === 'http:' ? http : https;
     const { body, headers } = requestHeaders(url, options);
-    const request = transport.request(
+    let settled = false;
+    let responseRef = null;
+    let request = null;
+    let deadline = null;
+
+    const cleanup = () => {
+      if (deadline) clearTimeout(deadline);
+      request?.off('timeout', onTimeout);
+      request?.off('error', onError);
+      responseRef?.off('data', onData);
+      responseRef?.off('end', onEnd);
+      responseRef?.off('error', onError);
+      responseRef?.off('aborted', onAborted);
+    };
+
+    const finishResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      request?.destroy();
+      reject(error);
+    };
+
+    const chunks = [];
+    let totalLength = 0;
+
+    const onData = (chunk) => {
+      chunks.push(chunk);
+      totalLength += chunk.length;
+    };
+
+    const onEnd = () => {
+      finishResolve({
+        statusCode: responseRef.statusCode ?? 0,
+        headers: responseRef.headers,
+        body: Buffer.concat(chunks, totalLength)
+      });
+    };
+
+    const onError = (error) => {
+      finishReject(error);
+    };
+
+    const onAborted = () => {
+      finishReject(new Error(`HTTP response aborted while requesting ${url.toString()}`));
+    };
+
+    function onTimeout() {
+      request?.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
+    }
+
+    request = transport.request(
       url,
       {
         method: options.method || 'GET',
@@ -305,29 +397,17 @@ function requestDirect(url, timeoutMs, options = {}) {
         timeout: timeoutMs
       },
       (response) => {
-        const chunks = [];
-        let totalLength = 0;
-
-        response.on('data', (chunk) => {
-          chunks.push(chunk);
-          totalLength += chunk.length;
-        });
-
-        response.once('end', () => {
-          resolve({
-            statusCode: response.statusCode ?? 0,
-            headers: response.headers,
-            body: Buffer.concat(chunks, totalLength)
-          });
-        });
+        responseRef = response;
+        response.on('data', onData);
+        response.once('end', onEnd);
+        response.once('error', onError);
+        response.once('aborted', onAborted);
       }
     );
+    deadline = setTimeout(onTimeout, timeoutMs);
 
-    request.once('timeout', () => {
-      request.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
-    });
-
-    request.once('error', reject);
+    request.once('timeout', onTimeout);
+    request.once('error', onError);
     if (body) request.write(body);
     request.end();
   });

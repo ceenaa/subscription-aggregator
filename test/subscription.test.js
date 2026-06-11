@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -38,6 +39,7 @@ import { buildResponseHeaders } from '../src/response-headers.js';
 import { getRequestOrigin } from '../src/url-context.js';
 import { addClientToPanels, buildAddClientRequest, buildClientSettings } from '../src/panel-client.js';
 import { isAdminAuthorized, isAuthorized } from '../src/auth.js';
+import { requestResponseDirect } from '../src/http-client.js';
 import {
   buildListInboundsRequest,
   buildUpdateClientRequest,
@@ -57,6 +59,24 @@ function baseEnv(overrides = {}) {
       'vless://11111111-1111-4111-8111-111111111111@proxy.example:443?type=ws&encryption=none&path=%2F&host=edge.example&security=tls&sni=tls.example#test-proxy',
     ...overrides
   };
+}
+
+function applyInboundClientUpdate(inbound, body) {
+  const params = new URLSearchParams(body);
+  const updatedClient = JSON.parse(params.get('settings')).clients[0];
+  const settings = JSON.parse(inbound.settings);
+  settings.clients = settings.clients.map((client) =>
+    (updatedClient.id && client.id === updatedClient.id) || client.subId === updatedClient.subId
+      ? { ...client, ...updatedClient }
+      : client
+  );
+  inbound.settings = JSON.stringify(settings);
+
+  for (const stat of inbound.clientStats || []) {
+    if (stat.subId === updatedClient.subId && updatedClient.enable !== undefined) {
+      stat.enable = updatedClient.enable;
+    }
+  }
 }
 
 test('decodes a base64 v2ray subscription body', () => {
@@ -253,6 +273,54 @@ test('builds security and CORS response headers', () => {
   assert.equal(headers['Subscription-Userinfo'], 'upload=1; download=2; total=3; expire=0');
   assert.match(headers.Vary, /Origin/);
   assert.match(headers.Vary, /Accept/);
+});
+
+test('direct HTTP requests enforce a hard deadline while response keeps streaming', async (context) => {
+  const sockets = new Set();
+  const intervals = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.once('data', () => {
+      socket.write('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n');
+      const interval = setInterval(() => {
+        socket.write('x');
+      }, 10);
+      intervals.add(interval);
+      socket.once('close', () => {
+        clearInterval(interval);
+        intervals.delete(interval);
+      });
+    });
+  });
+
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (error.code === 'EPERM') {
+      context.skip('local listening sockets are blocked in this sandbox');
+      return;
+    }
+    throw error;
+  }
+
+  const { port } = server.address();
+  const startedAt = Date.now();
+
+  try {
+    await assert.rejects(
+      () => requestResponseDirect(`http://127.0.0.1:${port}/stream`, { timeoutMs: 50 }),
+      /timed out/
+    );
+    assert.ok(Date.now() - startedAt < 1000);
+  } finally {
+    for (const interval of intervals) clearInterval(interval);
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test('builds public request origins from proxy headers or public base URL', () => {
@@ -1150,6 +1218,14 @@ test('quota worker skips fully disabled groups and disables active groups on eve
         };
       }
 
+      applyInboundClientUpdate(
+        target.name === 'first-panel'
+          ? firstInbound
+          : target.name === 'second-panel'
+            ? secondInbound
+            : thirdInbound,
+        options.body
+      );
       return {
         statusCode: 200,
         headers: {},
@@ -1252,6 +1328,102 @@ test('quota worker retries Xray disables and skips direct panels after Xray fail
   assert.equal(result.skipped.some((item) => item.panel === 'direct-panel' && item.reason.includes('skipped after Xray failure')), true);
 });
 
+test('quota worker reports panels that were already disabled before an update', async () => {
+  const gib = 1024 ** 3;
+  const panels = [
+    {
+      name: 'aws',
+      addClientUrl: 'https://aws.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct'
+    },
+    {
+      name: 'reverse',
+      addClientUrl: 'https://reverse.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct'
+    },
+    {
+      name: 'cloudflare',
+      addClientUrl: 'https://cloudflare.example/secret/panel/api/inbounds/addClient',
+      inboundId: '4',
+      proxy: 'direct'
+    }
+  ];
+  const inboundFor = (id, email, enable, allTime) => ({
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id,
+          email,
+          subId: 'mixed-sub',
+          enable,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'mixed-sub', enable, total: 5 * gib, allTime }]
+  });
+  const awsInbound = inboundFor('11111111-1111-4111-8111-111111111111', 'mixed-1', false, 6 * gib);
+  const reverseInbound = inboundFor('22222222-2222-4222-8222-222222222222', 'mixed', true, 0);
+  const cloudflareInbound = inboundFor('33333333-3333-4333-8333-333333333333', 'mixed-2', true, 0);
+  const requests = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj:
+              target.name === 'aws'
+                ? [awsInbound]
+                : target.name === 'reverse'
+                  ? [reverseInbound]
+                  : [cloudflareInbound]
+          })
+        };
+      }
+
+      applyInboundClientUpdate(
+        target.name === 'aws'
+          ? awsInbound
+          : target.name === 'reverse'
+            ? reverseInbound
+            : cloudflareInbound,
+        options.body
+      );
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, panels, {
+    logger: { log() {} }
+  });
+  const updatePanels = requests
+    .filter((request) => request.options.method === 'POST')
+    .map((request) => request.target.name);
+
+  assert.equal(result.disabled.length, 1);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.deepEqual(updatePanels, ['reverse', 'cloudflare']);
+  assert.deepEqual(
+    result.disabled[0].alreadyDisabledPanels.map((panel) => panel.panel),
+    ['aws']
+  );
+  assert.deepEqual(
+    result.disabled[0].panels.map((panel) => panel.panel),
+    ['reverse', 'cloudflare']
+  );
+});
+
 test('quota worker treats client settings enable as authoritative', async () => {
   const gib = 1024 ** 3;
   const panels = [
@@ -1290,19 +1462,27 @@ test('quota worker treats client settings enable as authoritative', async () => 
       }
     ]
   });
+  const firstInbound = inboundFor('11111111-1111-4111-8111-111111111111', 'disabled-first');
+  const secondInbound = inboundFor('22222222-2222-4222-8222-222222222222', 'disabled-second');
   const requests = [];
   const runtime = {
     async request(target, options) {
       requests.push({ target, options });
+      if (!target.url.endsWith('/list')) {
+        applyInboundClientUpdate(target.name === 'first-panel' ? firstInbound : secondInbound, options.body);
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+        };
+      }
+
       return {
         statusCode: 200,
         headers: {},
         body: JSON.stringify({
           success: true,
-          obj:
-            target.name === 'first-panel'
-              ? [inboundFor('11111111-1111-4111-8111-111111111111', 'disabled-first')]
-              : [inboundFor('22222222-2222-4222-8222-222222222222', 'disabled-second')]
+          obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
         })
       };
     }
@@ -1367,7 +1547,7 @@ test('quota worker retries direct panel disables before marking partial', async 
   };
   const updateAttempts = new Map();
   const runtime = {
-    async request(target) {
+    async request(target, options) {
       if (target.url.endsWith('/list')) {
         return {
           statusCode: 200,
@@ -1385,6 +1565,7 @@ test('quota worker retries direct panel disables before marking partial', async 
         throw new Error('temporary direct disable failed');
       }
 
+      applyInboundClientUpdate(target.name === 'first-panel' ? firstInbound : secondInbound, options.body);
       return {
         statusCode: 200,
         headers: {},
@@ -1400,6 +1581,91 @@ test('quota worker retries direct panel disables before marking partial', async 
   assert.equal(result.disabled.length, 1);
   assert.equal(result.partialDisabled.length, 0);
   assert.equal(result.disabled[0].subId, 'retry-sub');
+  assert.equal(updateAttempts.get('first-panel'), 1);
+  assert.equal(updateAttempts.get('second-panel'), 4);
+});
+
+test('quota worker verifies successful disable responses changed panel state', async () => {
+  const gib = 1024 ** 3;
+  const firstPanel = {
+    name: 'first-panel',
+    addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const secondPanel = {
+    name: 'second-panel',
+    addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          email: 'verify',
+          subId: 'verify-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'verify-sub', enable: true, total: 5 * gib, allTime: 6 * gib }]
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          email: 'verify',
+          subId: 'verify-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'verify-sub', enable: true, total: 5 * gib, allTime: 0 }]
+  };
+  const updateAttempts = new Map();
+  const runtime = {
+    async request(target, options) {
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
+          })
+        };
+      }
+
+      updateAttempts.set(target.name, (updateAttempts.get(target.name) || 0) + 1);
+      if (target.name === 'first-panel') {
+        applyInboundClientUpdate(firstInbound, options.body);
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+    logger: { log() {} }
+  });
+
+  assert.equal(result.disabled.length, 0);
+  assert.equal(result.partialDisabled.length, 1);
+  assert.equal(result.partialDisabled[0].subId, 'verify-sub');
+  assert.equal(result.partialDisabled[0].panels[0].panel, 'first-panel');
+  assert.equal(result.partialDisabled[0].failed[0].panel, 'second-panel');
+  assert.match(result.partialDisabled[0].failed[0].reason, /still active after update/);
   assert.equal(updateAttempts.get('first-panel'), 1);
   assert.equal(updateAttempts.get('second-panel'), 4);
 });
@@ -1461,6 +1727,9 @@ test('quota worker logs partial disabled when only one panel update succeeds', a
         };
       }
 
+      if (target.name === 'first-panel') {
+        applyInboundClientUpdate(firstInbound, options.body);
+      }
       return {
         statusCode: 200,
         headers: {},
