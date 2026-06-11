@@ -1747,7 +1747,10 @@ test('quota worker logs partial disabled when only one panel update succeeds', a
   assert.equal(result.partialDisabled.length, 1);
   assert.equal(result.partialDisabled[0].subId, 'partial-sub');
   assert.equal(result.partialDisabled[0].failed[0].panel, 'second-panel');
+  assert.equal(logs.some((line) => /^quota worker runtime: \d+ms$/.test(line)), true);
+  assert.equal(logs.some((line) => line.includes('processed clients: 1')), true);
   assert.equal(logs.some((line) => line.includes('partial disabled clients: 1')), true);
+  assert.equal(logs.some((line) => line.startsWith('- partial')), false);
 });
 
 test('uses negative duration when start after first use is enabled', () => {

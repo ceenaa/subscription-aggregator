@@ -108,6 +108,63 @@ function formatPanelList(names) {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
+function workerConcurrency(value) {
+  return Math.max(1, Number.parseInt(value, 10) || 5);
+}
+
+function skippedReason(item) {
+  if (item.reason === 'already disabled') return 'already disabled';
+  if (item.reason === 'client stats missing') return 'client stats missing';
+  if (item.reason === 'client update id missing') return 'client update id missing';
+  if (item.reason === 'configured inbound is missing from one or more panels') {
+    return 'configured inbound missing';
+  }
+  if (item.missingPanels) return 'client missing from panel';
+  if (item.reason?.startsWith('disable failed:')) return 'disable failed';
+  if (item.reason?.startsWith('skipped after Xray failure:')) return 'skipped after Xray failure';
+  return item.reason || 'unknown';
+}
+
+function countSkippedReasons(skipped) {
+  const counts = new Map();
+  for (const item of skipped) {
+    const reason = skippedReason(item);
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  }
+
+  return Array.from(counts.entries()).sort(([first], [second]) => first.localeCompare(second));
+}
+
+function countPanelDisables(items) {
+  return items.reduce((total, item) => total + item.panels.length, 0);
+}
+
+function logQuotaWorkerSummary(logger, result, summary) {
+  const durationMs = Math.max(0, Date.now() - summary.startedAt);
+  const disabledCount = result.disabled.length;
+  const partialDisabledCount = result.partialDisabled.length;
+  const unchangedCount = Math.max(0, result.checked - disabledCount - partialDisabledCount);
+  const panelDisableCount = countPanelDisables(result.disabled) + countPanelDisables(result.partialDisabled);
+
+  logger.log(`quota worker runtime: ${durationMs}ms`);
+  logger.log(`discovered clients: ${summary.discoveredClients}`);
+  logger.log(`processed clients: ${result.checked}`);
+  logger.log(`disabled clients: ${disabledCount}`);
+  logger.log(`partial disabled clients: ${partialDisabledCount}`);
+  logger.log(`unchanged clients: ${unchangedCount}`);
+  logger.log(`skipped clients: ${result.skipped.length}`);
+  logger.log(`panel disable operations: ${panelDisableCount}`);
+  logger.log(`worker concurrency: ${summary.concurrency}`);
+
+  if (summary.dryRun) {
+    logger.log('dry run: true');
+  }
+
+  for (const [reason, count] of countSkippedReasons(result.skipped)) {
+    logger.log(`skipped ${reason}: ${count}`);
+  }
+}
+
 async function mapLimit(items, concurrency, mapper) {
   const limit = Math.max(1, Number.parseInt(concurrency, 10) || 1);
   const results = new Array(items.length);
@@ -404,7 +461,8 @@ async function processQuotaGroup(runtime, group, options) {
 
 export async function enforcePanelQuota(runtime, panels, options = {}) {
   const logger = options.logger || console;
-  const concurrency = options.concurrency || 5;
+  const startedAt = Date.now();
+  const concurrency = workerConcurrency(options.concurrency);
   const configuredPanels = panels.filter(Boolean);
   if (configuredPanels.length < 1) {
     throw new Error('At least one configured panel inbound is required before running the quota worker');
@@ -429,10 +487,12 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
         }
       ]
     };
-    logger.log('quota worker checked 0 clients');
-    logger.log('disabled clients: 0');
-    logger.log('partial disabled clients: 0');
-    logger.log(`skipped clients: ${result.skipped.length}`);
+    logQuotaWorkerSummary(logger, result, {
+      concurrency,
+      discoveredClients: 0,
+      dryRun: options.dryRun === true,
+      startedAt
+    });
     return result;
   }
 
@@ -497,20 +557,12 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
     skipped
   };
 
-  logger.log(`quota worker checked ${result.checked} clients`);
-  logger.log(`disabled clients: ${disabled.length}`);
-  logger.log(`partial disabled clients: ${partialDisabled.length}`);
-  logger.log(`worker concurrency: ${concurrency}`);
-  for (const item of disabled) {
-    logger.log(`- ${item.email || item.subId}: ${item.reasons.join(', ')}`);
-  }
-  for (const item of partialDisabled) {
-    const failedPanels = item.failed.map((failure) => failure.panel).filter(Boolean).join(', ');
-    logger.log(
-      `- partial ${item.email || item.subId}: ${item.reasons.join(', ')}${failedPanels ? `; failed panels: ${failedPanels}` : ''}`
-    );
-  }
-  logger.log(`skipped clients: ${skipped.length}`);
+  logQuotaWorkerSummary(logger, result, {
+    concurrency,
+    discoveredClients: allSubIds.size,
+    dryRun: options.dryRun === true,
+    startedAt
+  });
 
   return result;
 }
@@ -530,11 +582,10 @@ async function main() {
   const runtime = await createSubscriptionFetcher(config);
 
   try {
-    const result = await enforcePanelQuota(runtime, config.panels, {
+    await enforcePanelQuota(runtime, config.panels, {
       ...options,
       concurrency: options.concurrency || config.worker.concurrency
     });
-    console.log(JSON.stringify(result, null, 2));
   } finally {
     await runtime.close();
   }
