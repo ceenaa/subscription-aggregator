@@ -282,6 +282,15 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     });
   }
 
+  for (const form of document.querySelectorAll('[data-confirm-action]')) {
+    form.addEventListener('submit', (event) => {
+      const message = form.dataset.confirmAction || 'Apply this change?';
+      if (!window.confirm(message)) {
+        event.preventDefault();
+      }
+    });
+  }
+
   for (const checkbox of document.querySelectorAll('[data-clear-expiry]')) {
     const dateInput = checkbox.closest('form')?.querySelector('[data-expiry-date]');
     const sync = () => {

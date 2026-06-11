@@ -15,6 +15,7 @@ import {
 } from './usage.js';
 
 const GIB = 1024 ** 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function mapLimit(items, concurrency, mapper) {
   const limit = Math.max(1, Number.parseInt(concurrency, 10) || 1);
@@ -134,6 +135,17 @@ function parseExpiryTime(value) {
   return parsed;
 }
 
+function parseExpiryAfterDays(value) {
+  if (value === undefined || String(value).trim() === '') return null;
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error('expiryAfterDays must be zero or a positive integer');
+  }
+
+  return Date.now() + parsed * DAY_MS;
+}
+
 function updateFieldsForEntry(entry, input) {
   const updates = {};
 
@@ -151,7 +163,10 @@ function updateFieldsForEntry(entry, input) {
   if (input.clearExpiry === true) {
     updates.expiryTime = 0;
   } else {
-    const expiryTime = parseExpiryTime(input.expiryTime) ?? parseExpiryDate(input.expiryDate);
+    const expiryTime =
+      parseExpiryAfterDays(input.expiryAfterDays) ??
+      parseExpiryTime(input.expiryTime) ??
+      parseExpiryDate(input.expiryDate);
     if (expiryTime !== null) updates.expiryTime = expiryTime;
   }
 

@@ -290,18 +290,26 @@ async function disableClient(runtime, entry) {
 async function processQuotaGroup(runtime, group, options) {
   const { entries } = group;
   const dryRun = options.dryRun === true;
+  const disableRetries = Number.isInteger(options.disableRetries) ? options.disableRetries : 3;
   const skipped = [];
   const evaluation = evaluateQuotaGroup(entries);
   if (!evaluation.exceeded) return { disabled: null, partialDisabled: null, skipped };
 
   const targets = entries.filter(clientLooksEnabled);
-  const updates = await runPanelMutationsXrayFirst(
-    targets,
-    async (target) => {
-      if (!updateClientId(target.client, target.stat)) {
-        throw new Error('client update id missing');
-      }
+  const retryableTargets = targets.filter((target) => {
+    if (updateClientId(target.client, target.stat)) return true;
 
+    skipped.push({
+      subId: target.subId,
+      email: target.email,
+      panel: target.panel.name,
+      reason: 'client update id missing'
+    });
+    return false;
+  });
+  const updates = await runPanelMutationsXrayFirst(
+    retryableTargets,
+    async (target) => {
       return {
         update: dryRun
           ? {
@@ -320,10 +328,7 @@ async function processQuotaGroup(runtime, group, options) {
           subId: target.subId,
           email: target.email,
           panel: target.panel.name,
-          reason:
-            error.message === 'client update id missing'
-              ? 'client update id missing'
-              : `disable failed: ${error.message}`
+          reason: `disable failed: ${error.message}`
         }
       }),
       onSkipped: (target, error) => ({
@@ -333,7 +338,8 @@ async function processQuotaGroup(runtime, group, options) {
           panel: target.panel.name,
           reason: `skipped after Xray failure: ${error.message}`
         }
-      })
+      }),
+      retries: disableRetries
     }
   );
   const panelUpdates = [];

@@ -70,6 +70,36 @@ function editForm(client) {
   `;
 }
 
+function quickExpiryForm(client) {
+  const clientLabel = client.email || client.subId;
+
+  return `
+    <form
+      class="quick-expiry-form"
+      method="post"
+      action="/clients/edit"
+      data-confirm-action="Set ${escapeHtml(clientLabel)} expiry to 30 days from now?"
+    >
+      <input type="hidden" name="subId" value="${escapeHtml(client.subId)}">
+      <input type="hidden" name="expiryAfterDays" value="30">
+      <button
+        type="submit"
+        class="quick-expiry-button"
+        title="Set expiry to 30 days from now"
+        aria-label="Set ${escapeHtml(clientLabel)} expiry to 30 days from now"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M8 2v3"></path>
+          <path d="M16 2v3"></path>
+          <path d="M3.5 9h17"></path>
+          <path d="M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"></path>
+          <path d="M12 13v3l2 1"></path>
+        </svg>
+      </button>
+    </form>
+  `;
+}
+
 function panelRows(client) {
   return client.panels
     .map(
@@ -176,9 +206,12 @@ function clientRows(clients) {
             </div>
           </td>
           <td>
-            <a href="${escapeHtml(client.subscriptionUrl)}">Open</a>
-            <button type="button" data-copy-text="${escapeHtml(client.subscriptionUrl)}">Copy</button>
-            <button type="button" data-edit-toggle>Edit</button>
+            <div class="client-actions">
+              <a href="${escapeHtml(client.subscriptionUrl)}">Open</a>
+              <button type="button" data-copy-text="${escapeHtml(client.subscriptionUrl)}">Copy</button>
+              ${quickExpiryForm(client)}
+              <button type="button" data-edit-toggle>Edit</button>
+            </div>
           </td>
         </tr>
         <tr class="panel-row" data-panel-row>
@@ -362,7 +395,43 @@ export function renderClientsPage({
     }
 
     .client-row button {
-      margin-left: 6px;
+      margin: 0;
+    }
+
+    .client-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      max-width: 260px;
+      white-space: normal;
+    }
+
+    .client-actions > a,
+    .client-actions > button,
+    .client-actions > form {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .quick-expiry-form {
+      display: inline-flex;
+      margin: 0;
+    }
+
+    .quick-expiry-button {
+      width: 36px;
+      padding: 7px;
+    }
+
+    .quick-expiry-button svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 2;
     }
 
     [data-copy-text][data-copied="true"] {

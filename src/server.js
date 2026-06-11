@@ -179,6 +179,7 @@ function clientEditValuesFromBody(body) {
     addGB: params.get('addGB') || '',
     expiryDate: params.get('expiryDate') || '',
     expiryTime: params.get('expiryTime') || '',
+    expiryAfterDays: params.get('expiryAfterDays') || '',
     clearExpiry: params.get('clearExpiry') === 'true'
   };
 }

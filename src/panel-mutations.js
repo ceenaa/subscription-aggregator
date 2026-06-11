@@ -13,8 +13,9 @@ function xrayFirst(items, panelFor) {
     });
 }
 
-async function runWithRetry(panel, operation, retryCount) {
-  const attempts = panel?.proxy === 'xray' ? retryCount + 1 : 1;
+async function runWithRetry(panel, operation, retryCount, defaultRetryCount) {
+  const retries = panel?.proxy === 'xray' ? retryCount : defaultRetryCount;
+  const attempts = retries + 1;
   let lastError = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -39,6 +40,7 @@ export async function runPanelMutationsXrayFirst(items, mutate, options = {}) {
     options.onSkipped ||
     ((item, error) => ({ item, ok: false, skipped: true, error: `skipped after Xray failure: ${error.message}` }));
   const xrayRetries = Number.isInteger(options.xrayRetries) ? options.xrayRetries : 3;
+  const retries = Number.isInteger(options.retries) ? options.retries : 0;
   const results = new Array(items.length);
   let xrayFailure = null;
 
@@ -49,7 +51,7 @@ export async function runPanelMutationsXrayFirst(items, mutate, options = {}) {
     }
 
     try {
-      results[index] = await runWithRetry(panel, () => mutate(item), xrayRetries);
+      results[index] = await runWithRetry(panel, () => mutate(item), xrayRetries, retries);
     } catch (error) {
       results[index] = onError(item, error);
       if (panel?.proxy === 'xray') {

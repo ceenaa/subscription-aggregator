@@ -796,6 +796,8 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.doesNotMatch(html, />Search<\/button>/);
   assert.match(html, /data-edit-toggle/);
   assert.match(html, /action="\/clients\/edit"/);
+  assert.match(html, /name="expiryAfterDays" value="30"/);
+  assert.match(html, /Set expiry to 30 days from now/);
   assert.match(html, /Add Usage \(GB\)/);
   assert.match(html, /data-expiry-time/);
   assert.match(html, /No expiry/);
@@ -939,6 +941,28 @@ test('updates created clients while preserving untouched client fields', async (
   assert.equal(updateRequests[1].client.enable, false);
   assert.equal(updateRequests[0].client.expiryTime, expiryTime);
   assert.equal(updateRequests[1].client.expiryTime, expiryTime);
+
+  updateRequests.length = 0;
+  const fixedNow = Date.parse('2026-06-11T10:00:00.000Z');
+  const originalNow = Date.now;
+  Date.now = () => fixedNow;
+  try {
+    const expiryResult = await updateCreatedPanelClient(runtime, [firstPanel, secondPanel], {
+      subId: 'shared-sub',
+      expiryAfterDays: '30'
+    });
+
+    assert.equal(expiryResult.ok, true);
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const quickExpiryTime = fixedNow + 30 * 24 * 60 * 60 * 1000;
+  assert.equal(updateRequests.length, 2);
+  assert.equal(updateRequests[0].client.expiryTime, quickExpiryTime);
+  assert.equal(updateRequests[1].client.expiryTime, quickExpiryTime);
+  assert.equal(updateRequests[0].client.enable, true);
+  assert.equal(updateRequests[1].client.enable, true);
 });
 
 test('updates clients through Xray panels before direct panels and skips direct after Xray failure', async () => {
@@ -1295,6 +1319,89 @@ test('quota worker treats client settings enable as authoritative', async () => 
   assert.equal(result.disabled[0].subId, 'disabled-sub');
   assert.equal(result.skipped.some((item) => item.reason === 'already disabled'), false);
   assert.equal(requests.filter((request) => request.options.method === 'POST').length, 2);
+});
+
+test('quota worker retries direct panel disables before marking partial', async () => {
+  const gib = 1024 ** 3;
+  const firstPanel = {
+    name: 'first-panel',
+    addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const secondPanel = {
+    name: 'second-panel',
+    addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          email: 'retry',
+          subId: 'retry-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'retry-sub', enable: true, total: 5 * gib, allTime: 6 * gib }]
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          email: 'retry',
+          subId: 'retry-sub',
+          enable: true,
+          totalGB: 5 * gib
+        }
+      ]
+    }),
+    clientStats: [{ subId: 'retry-sub', enable: true, total: 5 * gib, allTime: 0 }]
+  };
+  const updateAttempts = new Map();
+  const runtime = {
+    async request(target) {
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'first-panel' ? [firstInbound] : [secondInbound]
+          })
+        };
+      }
+
+      const attempt = (updateAttempts.get(target.name) || 0) + 1;
+      updateAttempts.set(target.name, attempt);
+      if (target.name === 'second-panel' && attempt < 4) {
+        throw new Error('temporary direct disable failed');
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, msg: 'updated', obj: null })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+    logger: { log() {} }
+  });
+
+  assert.equal(result.disabled.length, 1);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.equal(result.disabled[0].subId, 'retry-sub');
+  assert.equal(updateAttempts.get('first-panel'), 1);
+  assert.equal(updateAttempts.get('second-panel'), 4);
 });
 
 test('quota worker logs partial disabled when only one panel update succeeds', async () => {
