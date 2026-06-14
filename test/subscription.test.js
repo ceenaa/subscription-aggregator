@@ -659,6 +659,25 @@ test('normalizes combined used traffic to the higher quota', () => {
   assert.equal(combined.scale, 2);
 });
 
+test('normalizes panel usage with total GB ratios before combining', () => {
+  const gib = 1024 ** 3;
+  const first = {
+    panel: { name: 'ratio-panel', totalGbRatio: 2 },
+    total: 5 * gib,
+    allTime: 1 * gib
+  };
+  const second = {
+    panel: { name: 'base-panel', totalGbRatio: 1 },
+    total: 8 * gib,
+    allTime: 1 * gib
+  };
+  const combined = normalizeCombinedUsage([first, second]);
+
+  assert.equal(combined.total, 10 * gib);
+  assert.equal(combined.used, 3.25 * gib);
+  assert.equal(combined.remaining, 6.75 * gib);
+});
+
 test('quota evaluation prefers current upload and download over allTime', () => {
   const gib = 1024 ** 3;
   const first = {
@@ -901,6 +920,7 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.match(fastHtml, /data-source-usage/);
   assert.match(fastHtml, /data-sub-id="shared-sub"/);
   assert.match(fastHtml, /Loading subscription usage/);
+  assert.match(fastHtml, /9\.00 GB/);
 });
 
 test('updates created clients while preserving untouched client fields', async () => {

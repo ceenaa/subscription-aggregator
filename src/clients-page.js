@@ -167,6 +167,7 @@ function sourceRows(client) {
       data-source-usage
       data-sub-id="${escapeHtml(client.subId)}"
       ${hasSources ? 'data-loaded="true"' : ''}
+      ${client.autoLoadSubscriptionUsage ? 'data-auto-load="true"' : ''}
     >
       <h3>Subscription Usage</h3>
       <div class="source-status" data-source-status ${hasSources ? 'hidden' : ''}>Loading subscription usage...</div>
@@ -187,7 +188,11 @@ function clientRows(clients) {
   return clients
     .map((client) => {
       const usage = client.usage;
-      const meterWidth = percent(usage.used, usage.total).toFixed(2);
+      const isLoadingUsage = client.autoLoadSubscriptionUsage && !client.sources?.length;
+      const meterWidth = isLoadingUsage ? '0.00' : percent(usage.used, usage.total).toFixed(2);
+      const usedText = isLoadingUsage ? 'Loading...' : formatBytes(usage.used);
+      const totalText = isLoadingUsage ? 'Loading...' : quotaText(usage.total);
+      const remainingValue = isLoadingUsage ? 'Loading...' : remainingText(usage);
       const searchText = `${client.email || ''} ${client.subId}`.toLowerCase();
 
       return `
@@ -197,9 +202,9 @@ function clientRows(clients) {
             <span>${escapeHtml(client.subId)}</span>
           </td>
           <td><span class="status ${statusClass(client.status)}">${escapeHtml(client.status)}</span></td>
-          <td data-client-used>${formatBytes(usage.used)}</td>
-          <td data-client-total>${quotaText(usage.total)}</td>
-          <td data-client-remaining>${remainingText(usage)}</td>
+          <td data-client-used>${escapeHtml(usedText)}</td>
+          <td data-client-total>${escapeHtml(totalText)}</td>
+          <td data-client-remaining>${escapeHtml(remainingValue)}</td>
           <td>
             <div class="meter" aria-label="Normalized usage">
               <span data-client-meter style="width: ${meterWidth}%"></span>

@@ -50,15 +50,18 @@ export function normalizeQuotaUsage(usage, options = {}) {
   const divisor = quotaDivisor(
     options.quotaDivisor ?? usage.quotaDivisor ?? usage.configCount ?? usage.count
   );
-  const total = Math.round(numberOrZero(usage.total) / divisor);
+  const ratio = totalGbRatio(options.totalGbRatio ?? usage.totalGbRatio ?? usage.panel?.totalGbRatio);
+  const total = Math.round((numberOrZero(usage.total) / divisor) * ratio);
   const used = numberOrZero(
     usage.allTime ?? usage.used ?? numberOrZero(usage.upload) + numberOrZero(usage.download)
-  );
+  ) * ratio;
 
   if (usage.hasData === false) return usage;
 
   return {
     ...usage,
+    upload: usage.upload === undefined ? usage.upload : numberOrZero(usage.upload) * ratio,
+    download: usage.download === undefined ? usage.download : numberOrZero(usage.download) * ratio,
     used,
     total,
     remaining: total > 0 ? Math.max(total - used, 0) : 0

@@ -187,6 +187,22 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     if (meter) meter.style.width = percent(usage?.used, usage?.total).toFixed(2) + '%';
   }
 
+  function updateSummaryStatus(container, value) {
+    const detailRow = container.closest('[data-panel-row]');
+    const clientRow = detailRow?.previousElementSibling;
+    if (!clientRow?.hasAttribute('data-client-row')) return;
+
+    const used = clientRow.querySelector('[data-client-used]');
+    const total = clientRow.querySelector('[data-client-total]');
+    const remaining = clientRow.querySelector('[data-client-remaining]');
+    const meter = clientRow.querySelector('[data-client-meter]');
+
+    if (used) used.textContent = value;
+    if (total) total.textContent = value;
+    if (remaining) remaining.textContent = value;
+    if (meter) meter.style.width = '0.00%';
+  }
+
   async function loadSourceUsage(container) {
     if (container.dataset.loaded === 'true' || container.dataset.loading === 'true') return;
 
@@ -215,6 +231,7 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
       container.dataset.loaded = 'true';
       if (status) status.hidden = true;
     } catch (error) {
+      updateSummaryStatus(container, 'Unavailable');
       if (status) {
         status.hidden = false;
         status.textContent = error.message || 'Usage request failed';
@@ -222,6 +239,21 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     } finally {
       delete container.dataset.loading;
     }
+  }
+
+  async function loadAutoSourceUsage() {
+    const containers = Array.from(document.querySelectorAll('[data-source-usage][data-auto-load="true"]'));
+    let nextIndex = 0;
+    const concurrency = Math.min(4, containers.length);
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (nextIndex < containers.length) {
+        const container = containers[nextIndex];
+        nextIndex += 1;
+        await loadSourceUsage(container);
+      }
+    });
+
+    await Promise.all(workers);
   }
 
   function applyFilter() {
@@ -330,5 +362,6 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     }
   }
 
+  window.setTimeout(loadAutoSourceUsage, 0);
   applyFilter();
 })();`;

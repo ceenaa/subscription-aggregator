@@ -283,7 +283,9 @@ async function handleSettingsPost(config, request, response, pathname) {
 }
 
 async function loadClientsView(config, runtime, request, options = {}) {
-  const includeSubscriptionUsage = options.includeSubscriptionUsage !== false;
+  const includeSubscriptionUsage = options.includeSubscriptionUsage === true;
+  const showPanelUsage = includeSubscriptionUsage ? false : options.showPanelUsage !== false;
+  const autoLoadSubscriptionUsage = options.autoLoadSubscriptionUsage === true;
   const result = await listCreatedPanelClients(runtime, config.panels, {
     sources: config.sources,
     concurrency: config.worker.concurrency,
@@ -292,7 +294,9 @@ async function loadClientsView(config, runtime, request, options = {}) {
   const clients = result.clients.map((client) => ({
     ...client,
     subscriptionUrl: absoluteSubscriptionUrl(config, request, client.subId),
-    canLoadSubscriptionUsage: config.sources.length > 0 && !includeSubscriptionUsage
+    canLoadSubscriptionUsage: config.sources.length > 0 && !includeSubscriptionUsage,
+    autoLoadSubscriptionUsage: config.sources.length > 0 && !includeSubscriptionUsage && autoLoadSubscriptionUsage,
+    showPanelUsage
   }));
 
   return {
@@ -569,8 +573,10 @@ export async function createServer(config = loadConfig()) {
 
         let result;
         try {
+          const usageMode = url.searchParams.get('usage');
           result = await loadClientsView(config, runtime, request, {
-            includeSubscriptionUsage: url.searchParams.get('usage') !== 'panel'
+            includeSubscriptionUsage: usageMode === 'subscription',
+            showPanelUsage: usageMode !== 'subscription'
           });
         } catch (error) {
           sendHtml(
