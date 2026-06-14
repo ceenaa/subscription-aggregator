@@ -42,6 +42,7 @@ import { isAdminAuthorized, isAuthorized } from '../src/auth.js';
 import { requestResponseDirect } from '../src/http-client.js';
 import {
   buildListInboundsRequest,
+  buildOnlineClientsRequest,
   buildUpdateClientRequest,
   enforcePanelQuota,
   evaluateQuotaPair,
@@ -576,12 +577,19 @@ test('builds 3x-ui list and update requests for the quota worker', () => {
   };
 
   const listRequest = buildListInboundsRequest(panel);
+  const onlineRequest = buildOnlineClientsRequest(panel);
   const updateRequest = buildUpdateClientRequest(panel, inbound, client);
   const updateBody = new URLSearchParams(updateRequest.body);
   const settings = JSON.parse(updateBody.get('settings'));
 
   assert.equal(listRequest.url, 'https://panel.example/secret/panel/api/inbounds/list');
   assert.equal(listRequest.headers.Cookie, panel.cookie);
+  assert.equal(onlineRequest.url, 'https://panel.example/secret/panel/api/inbounds/onlines');
+  assert.equal(onlineRequest.method, 'POST');
+  assert.equal(onlineRequest.body, '');
+  assert.equal(onlineRequest.headers.Cookie, panel.cookie);
+  assert.equal(onlineRequest.headers.Origin, 'https://panel.example');
+  assert.equal(onlineRequest.headers['Content-Type'], 'application/x-www-form-urlencoded; charset=UTF-8');
   assert.equal(updateRequest.url, 'https://panel.example/secret/panel/api/inbounds/updateClient/11111111-1111-4111-8111-111111111111');
   assert.equal(updateBody.get('id'), '4');
   assert.equal(settings.clients[0].enable, false);
@@ -815,6 +823,17 @@ test('lists only clients present in every configured panel inbound', async () =>
   let fetchCalls = 0;
   const runtime = {
     async request(target) {
+      if (target.url.endsWith('/onlines')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            success: true,
+            obj: target.name === 'cdn1' ? ['shared', 'first-only'] : ['shared']
+          })
+        };
+      }
+
       return {
         statusCode: 200,
         headers: {},
@@ -874,6 +893,14 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.equal(result.clients[0].sources[0].used, 2 * gib);
   assert.equal(result.clients[0].panels[0].total, 10 * gib);
   assert.equal(result.clients[0].panels[0].used, 8 * gib);
+  assert.equal(result.panels[0].onlineCount, 2);
+  assert.equal(result.panels[0].activeClients, 2);
+  assert.equal(result.panels[0].inactiveClients, 0);
+  assert.equal(result.panels[0].totalClients, 2);
+  assert.equal(result.panels[1].onlineCount, 1);
+  assert.equal(result.panels[1].activeClients, 1);
+  assert.equal(result.panels[1].inactiveClients, 0);
+  assert.equal(result.panels[1].totalClients, 1);
   assert.match(html, /Created Configurations/);
   assert.match(html, /Subscription Usage/);
   assert.match(html, /Panel Status/);
@@ -892,6 +919,12 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.match(html, /\/assets\/clients\.js/);
   assert.match(html, /shared-sub/);
   assert.match(html, /3\.00 GB/);
+  assert.match(html, /panel-summary-card/);
+  assert.match(html, /online-pill/);
+  assert.match(html, />Online<\/span>\s*<b>2<\/b>/);
+  assert.match(html, />Active<\/span>\s*<strong>2\/2<\/strong>/);
+  assert.match(html, />Inactive<\/span>\s*<strong>0\/2<\/strong>/);
+  assert.match(html, /summary-meter/);
   assert.doesNotMatch(html, /first-only-sub/);
 
   fetchCalls = 0;
@@ -921,6 +954,93 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.match(fastHtml, /data-sub-id="shared-sub"/);
   assert.match(fastHtml, /Loading subscription usage/);
   assert.match(fastHtml, /9\.00 GB/);
+});
+
+test('summarizes multiple inbounds from the same panel once', async () => {
+  const firstInboundPanel = {
+    name: '1x',
+    panelName: 'cdn-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    inboundId: '6',
+    proxy: 'xray',
+    quotaDivisor: 1
+  };
+  const secondInboundPanel = {
+    name: '2x',
+    panelName: 'cdn-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'xray',
+    quotaDivisor: 1
+  };
+  const firstInbound = {
+    id: 6,
+    settings: JSON.stringify({
+      clients: [
+        { email: 'shared', subId: 'shared-sub', enable: false },
+        { email: 'first-only', subId: 'first-only-sub', enable: false }
+      ]
+    }),
+    clientStats: []
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        { email: 'shared', subId: 'shared-sub', enable: true },
+        { email: 'second-only', subId: 'second-only-sub', enable: true }
+      ]
+    }),
+    clientStats: []
+  };
+  let onlineCalls = 0;
+  const runtime = {
+    async request(target) {
+      if (target.url.endsWith('/onlines')) {
+        onlineCalls += 1;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: ['shared', 'second-only', 'someone'] })
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, obj: [firstInbound, secondInbound] })
+      };
+    }
+  };
+
+  const result = await listCreatedPanelClients(runtime, [firstInboundPanel, secondInboundPanel], {
+    includeSubscriptionUsage: false
+  });
+  const html = renderClientsPage({
+    panels: result.panels,
+    clients: [],
+    updatedAt: new Date('2026-06-15T10:00:00Z')
+  });
+
+  assert.equal(onlineCalls, 1);
+  assert.equal(result.panels.length, 1);
+  assert.equal(result.panels[0].name, 'cdn-panel');
+  assert.equal(result.panels[0].inboundCount, 2);
+  assert.deepEqual(result.panels[0].inboundIds, ['6', '4']);
+  assert.equal(result.panels[0].onlineCount, 3);
+  assert.equal(result.panels[0].totalClients, 3);
+  assert.equal(result.panels[0].activeClients, 2);
+  assert.equal(result.panels[0].inactiveClients, 1);
+  assert.equal((html.match(/<li class="panel-summary-card">/g) || []).length, 1);
+  assert.match(html, /cdn-panel/);
+  assert.match(html, /2 inbounds/);
+  assert.match(html, />Online<\/span>\s*<b>3<\/b>/);
+  assert.match(html, />Active<\/span>\s*<strong>2\/3<\/strong>/);
+  assert.match(html, />Inactive<\/span>\s*<strong>1\/3<\/strong>/);
+  assert.doesNotMatch(html, /<strong>1x<\/strong>/);
+  assert.doesNotMatch(html, /<strong>2x<\/strong>/);
 });
 
 test('updates created clients while preserving untouched client fields', async () => {

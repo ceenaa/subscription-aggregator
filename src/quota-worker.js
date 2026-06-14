@@ -46,7 +46,7 @@ function panelHeaders(panel, url, options = {}) {
     'X-Requested-With': 'XMLHttpRequest'
   };
 
-  if (options.body) {
+  if (Object.prototype.hasOwnProperty.call(options, 'body')) {
     headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
     headers.Origin = new URL(url).origin;
   }
@@ -193,6 +193,18 @@ export function buildListInboundsRequest(panel) {
     url,
     method: 'GET',
     headers: panelHeaders(panel, url)
+  };
+}
+
+export function buildOnlineClientsRequest(panel) {
+  const url = panelApiUrl(panel, 'onlines');
+  const body = '';
+
+  return {
+    url,
+    method: 'POST',
+    body,
+    headers: panelHeaders(panel, url, { body })
   };
 }
 
@@ -392,6 +404,12 @@ export async function fetchPanelInbound(runtime, panel) {
     inbound: inbound || null,
     clients: inbound ? indexInboundClients(panel, inbound) : new Map()
   };
+}
+
+export async function fetchPanelOnlineClients(runtime, panel) {
+  const request = buildOnlineClientsRequest(panel);
+  const payload = await requestPanelJson(runtime, panel, request);
+  return Array.isArray(payload.obj) ? payload.obj.map(String) : [];
 }
 
 async function disableClient(runtime, entry) {

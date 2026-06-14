@@ -247,16 +247,62 @@ function clientRows(clients) {
 }
 
 function panelSummary(panels) {
+  const countLabel = (value) =>
+    value !== null && value !== undefined && Number.isFinite(Number(value))
+      ? String(value)
+      : 'Unavailable';
+  const detailLabel = (panel) => {
+    const inboundCount = Number(panel.inboundCount) || 0;
+    const inboundLabel =
+      inboundCount > 1
+        ? `${inboundCount} inbounds`
+        : `Inbound ${panel.inboundId || panel.inboundIds?.[0] || 'unknown'}`;
+    const divisorCount = Array.isArray(panel.quotaDivisors) ? panel.quotaDivisors.length : 1;
+    const divisorLabel =
+      divisorCount > 1
+        ? `divisors ${panel.quotaDivisors.join(', ')}`
+        : `divisor ${panel.quotaDivisor}`;
+
+    return [inboundLabel, panel.proxy, divisorLabel].filter(Boolean).join(' · ');
+  };
+
   return panels
     .map(
-      (panel) => `
-        <li>
-          <strong>${escapeHtml(panel.name)}</strong>
-          <span>Inbound ${escapeHtml(panel.inboundId)}</span>
-          <span>${escapeHtml(panel.proxy)}</span>
-          <span>divisor ${escapeHtml(panel.quotaDivisor)}</span>
+      (panel) => {
+        const totalClients = Number(panel.totalClients) || 0;
+        const activeClients = Number(panel.activeClients) || 0;
+        const inactiveClients = Number(panel.inactiveClients) || 0;
+        const onlineLabel = countLabel(panel.onlineCount);
+        const activePercent = percent(activeClients, totalClients).toFixed(2);
+        const inactivePercent = percent(inactiveClients, totalClients).toFixed(2);
+
+        return `
+        <li class="panel-summary-card">
+          <div class="panel-summary-head">
+            <div>
+              <strong>${escapeHtml(panel.name)}</strong>
+              <span>${escapeHtml(detailLabel(panel))}</span>
+            </div>
+            <div class="online-pill ${panel.onlineError ? 'is-unavailable' : ''}" title="${escapeHtml(panel.onlineError || '')}">
+              <span>Online</span>
+              <b>${escapeHtml(onlineLabel)}</b>
+            </div>
+          </div>
+          <div class="panel-metrics">
+            <div class="panel-metric active-metric">
+              <span>Active</span>
+              <strong>${escapeHtml(activeClients)}/${escapeHtml(totalClients)}</strong>
+              <div class="summary-meter" aria-hidden="true"><i style="width: ${activePercent}%"></i></div>
+            </div>
+            <div class="panel-metric inactive-metric">
+              <span>Inactive</span>
+              <strong>${escapeHtml(inactiveClients)}/${escapeHtml(totalClients)}</strong>
+              <div class="summary-meter" aria-hidden="true"><i style="width: ${inactivePercent}%"></i></div>
+            </div>
+          </div>
         </li>
-      `
+      `;
+      }
     )
     .join('');
 }
@@ -493,29 +539,146 @@ export function renderClientsPage({
     }
 
     .summary {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
       padding: 0;
       margin: 18px 0;
       list-style: none;
     }
 
-    .summary li {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 38px;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
+    .panel-summary-card {
+      display: grid;
+      gap: 14px;
+      min-height: 132px;
+      padding: 14px;
+      border: 1px solid rgba(45, 212, 191, 0.22);
       border-radius: 8px;
-      background: var(--panel);
-      color: var(--muted);
-      font-size: 13px;
+      background:
+        linear-gradient(135deg, rgba(45, 212, 191, 0.12), rgba(251, 191, 36, 0.06) 45%, rgba(251, 113, 133, 0.08)),
+        var(--panel);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
 
-    .summary strong {
+    .panel-summary-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .panel-summary-head > div:first-child {
+      min-width: 0;
+    }
+
+    .panel-summary-head strong,
+    .panel-summary-head span,
+    .online-pill span,
+    .online-pill b,
+    .panel-metric span,
+    .panel-metric strong {
+      display: block;
+    }
+
+    .panel-summary-head strong {
       color: var(--text);
+      font-size: 15px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+
+    .panel-summary-head > div:first-child > span {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .online-pill {
+      display: grid;
+      flex: 0 0 auto;
+      min-width: 86px;
+      padding: 8px 10px;
+      border: 1px solid rgba(45, 212, 191, 0.48);
+      border-radius: 8px;
+      background: rgba(45, 212, 191, 0.1);
+      text-align: right;
+    }
+
+    .online-pill span {
+      color: #99f6e4;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .online-pill b {
+      color: var(--text);
+      font-size: 22px;
+      line-height: 1.05;
+    }
+
+    .online-pill.is-unavailable {
+      border-color: rgba(251, 191, 36, 0.48);
+      background: rgba(251, 191, 36, 0.1);
+    }
+
+    .online-pill.is-unavailable span {
+      color: #fde68a;
+    }
+
+    .online-pill.is-unavailable b {
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .panel-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line-soft);
+    }
+
+    .panel-metric {
+      min-width: 0;
+    }
+
+    .panel-metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .panel-metric strong {
+      margin-top: 4px;
+      color: var(--text);
+      font-size: 20px;
+      line-height: 1.1;
+    }
+
+    .summary-meter {
+      height: 7px;
+      margin-top: 9px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(154, 168, 189, 0.22);
+    }
+
+    .summary-meter i {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+    }
+
+    .active-metric .summary-meter i {
+      background: linear-gradient(90deg, var(--accent), var(--ok));
+    }
+
+    .inactive-metric .summary-meter i {
+      background: linear-gradient(90deg, var(--warning), var(--danger));
     }
 
     .toolbar {
@@ -892,6 +1055,33 @@ export function renderClientsPage({
       .edit-actions button,
       .edit-heading button {
         width: 100%;
+      }
+    }
+
+    @media (max-width: 520px) {
+      main {
+        width: min(100% - 24px, 1180px);
+        padding-top: 22px;
+      }
+
+      .summary {
+        grid-template-columns: 1fr;
+      }
+
+      .panel-summary-head {
+        flex-direction: column;
+      }
+
+      .online-pill {
+        width: 100%;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+        text-align: left;
+      }
+
+      .panel-metrics {
+        grid-template-columns: 1fr;
+        gap: 14px;
       }
     }
   </style>

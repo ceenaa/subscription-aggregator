@@ -1,7 +1,8 @@
 import {
   buildUpdateClientRequest,
   clientLooksEnabled,
-  fetchPanelInbound
+  fetchPanelInbound,
+  fetchPanelOnlineClients
 } from './quota-worker.js';
 import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 import { aggregateSubscriptions } from './subscription.js';
@@ -96,6 +97,105 @@ function sourceUsage(result) {
 function numberOrZero(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function panelApiIdentity(panel) {
+  try {
+    const url = new URL(panel.addClientUrl);
+    return `${url.origin}${url.pathname.replace(/\/api\/inbounds\/addClient\/?$/, '/api/inbounds')}\u0000${panel.proxy || ''}`;
+  } catch {
+    return `${panel.addClientUrl || ''}\u0000${panel.proxy || ''}`;
+  }
+}
+
+function panelGroupKey(panel) {
+  if (panel.panelDbId !== undefined && panel.panelDbId !== null) {
+    return `db:${panel.panelDbId}`;
+  }
+
+  return panelApiIdentity(panel);
+}
+
+function groupByPanel(items, getPanel = (item) => item) {
+  const groups = [];
+  const groupsByKey = new Map();
+
+  for (const item of items) {
+    const panel = getPanel(item);
+    const key = panelGroupKey(panel);
+    let group = groupsByKey.get(key);
+
+    if (!group) {
+      group = { key, items: [] };
+      groupsByKey.set(key, group);
+      groups.push(group);
+    }
+
+    group.items.push(item);
+  }
+
+  return groups;
+}
+
+async function loadPanelOnlineState(runtime, panel) {
+  try {
+    const onlineClients = await fetchPanelOnlineClients(runtime, panel);
+    return {
+      onlineCount: onlineClients.length,
+      onlineError: ''
+    };
+  } catch (error) {
+    return {
+      onlineCount: null,
+      onlineError: error.message
+    };
+  }
+}
+
+function uniqueStrings(values) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => String(value ?? '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function panelSummaryState(states, onlineState = {}) {
+  const firstPanel = states[0].panel;
+  const clients = new Map();
+
+  for (const state of states) {
+    for (const entry of state.clients.values()) {
+      const key = entry.subId || entry.email || entry.client?.id || `${state.panel.inboundId}:${clients.size}`;
+      const client = clients.get(key) || { active: false };
+      client.active = client.active || clientLooksEnabled(entry);
+      clients.set(key, client);
+    }
+  }
+
+  const clientStates = Array.from(clients.values());
+  const totalClients = clientStates.length;
+  const activeClients = clientStates.filter((client) => client.active).length;
+  const inboundIds = uniqueStrings(states.map((state) => state.panel.inboundId));
+  const quotaDivisors = uniqueStrings(states.map((state) => state.panel.quotaDivisor || 1));
+  const proxies = uniqueStrings(states.map((state) => state.panel.proxy));
+
+  return {
+    name: firstPanel.panelName || firstPanel.name,
+    inboundId: inboundIds[0] || '',
+    inboundIds,
+    inboundCount: states.length,
+    proxy: proxies.join(', '),
+    quotaDivisor: quotaDivisors.join(', '),
+    quotaDivisors,
+    totalClients,
+    activeClients,
+    inactiveClients: Math.max(totalClients - activeClients, 0),
+    onlineCount: onlineState.onlineCount,
+    onlineError: onlineState.onlineError || ''
+  };
 }
 
 function parseAddUsageBytes(value, ratio = 1) {
@@ -232,9 +332,16 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
     throw new Error('At least one configured panel inbound is required to list created clients');
   }
 
-  const panelStates = await Promise.all(
-    configuredPanels.map((panel) => fetchPanelInbound(runtime, panel))
-  );
+  const [panelStates, onlineStates] = await Promise.all([
+    Promise.all(configuredPanels.map((panel) => fetchPanelInbound(runtime, panel))),
+    Promise.all(
+      groupByPanel(configuredPanels).map(async (group) => [
+        group.key,
+        await loadPanelOnlineState(runtime, group.items[0])
+      ])
+    )
+  ]);
+  const onlineStatesByPanel = new Map(onlineStates);
   const missingInboundPanels = panelStates
     .filter((state) => !state.inbound)
     .map((state) => state.panel.name);
@@ -295,12 +402,9 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
   });
 
   return {
-    panels: panelStates.map((state) => ({
-      name: state.panel.name,
-      inboundId: state.panel.inboundId,
-      proxy: state.panel.proxy,
-      quotaDivisor: state.panel.quotaDivisor || 1
-    })),
+    panels: groupByPanel(panelStates, (state) => state.panel).map((group) =>
+      panelSummaryState(group.items, onlineStatesByPanel.get(group.key))
+    ),
     clients
   };
 }
