@@ -1252,6 +1252,159 @@ test('quota worker skips fully disabled groups and disables active groups on eve
   assert.equal(updateRequests.length, 3);
 });
 
+test('quota worker uses subscription-header usage before panel stats when sources exist', async () => {
+  const gib = 1024 ** 3;
+  const panel = {
+    name: 'usage-panel',
+    addClientUrl: 'https://usage-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const belowClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'below',
+    subId: 'below-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const overClient = {
+    id: '22222222-2222-4222-8222-222222222222',
+    email: 'over',
+    subId: 'over-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const inbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [belowClient, overClient] }),
+    clientStats: [
+      { subId: 'below-sub', enable: true, total: 10 * gib, allTime: 12 * gib },
+      { subId: 'over-sub', enable: true, total: 10 * gib, allTime: 0 }
+    ]
+  };
+  const requests = [];
+  const fetchedSources = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: [inbound] })
+        };
+      }
+
+      applyInboundClientUpdate(inbound, options.body);
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          msg: 'Inbound client has been updated.',
+          obj: null
+        })
+      };
+    },
+    async fetch(source) {
+      fetchedSources.push(source.url);
+      const isOver = source.url.endsWith('/over-sub');
+      return {
+        statusCode: 200,
+        headers: {
+          'subscription-userinfo': isOver
+            ? `upload=${6 * gib}; download=${5 * gib}; total=${10 * gib}; expire=0`
+            : `upload=${1 * gib}; download=${1 * gib}; total=${10 * gib}; expire=0`
+        },
+        body: `vless://33333333-3333-4333-8333-333333333333@example.com:443#${isOver ? 'over' : 'below'}\n`
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [panel], {
+    sources: [{ name: 'authoritative', baseUrl: 'https://usage.example/sub', proxy: 'direct' }],
+    logger: { log() {} }
+  });
+  const updateRequests = requests.filter((request) => request.options.method === 'POST');
+
+  assert.equal(result.checked, 2);
+  assert.deepEqual(result.disabled.map((item) => item.subId), ['over-sub']);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.equal(updateRequests.length, 1);
+  const updatedClient = JSON.parse(new URLSearchParams(updateRequests[0].options.body).get('settings')).clients[0];
+  assert.equal(updatedClient.subId, 'over-sub');
+  assert.equal(fetchedSources.includes('https://usage.example/sub/below-sub'), true);
+  assert.equal(fetchedSources.includes('https://usage.example/sub/over-sub'), true);
+});
+
+test('quota worker evaluates subscription usage when panel stats are missing', async () => {
+  const gib = 1024 ** 3;
+  const panel = {
+    name: 'statsless-panel',
+    addClientUrl: 'https://statsless-panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+  const inbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          email: 'statsless',
+          subId: 'statsless-sub',
+          enable: true,
+          totalGB: 10 * gib
+        }
+      ]
+    }),
+    clientStats: []
+  };
+  const requests = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: [inbound] })
+        };
+      }
+
+      applyInboundClientUpdate(inbound, options.body);
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          msg: 'Inbound client has been updated.',
+          obj: null
+        })
+      };
+    },
+    async fetch() {
+      return {
+        statusCode: 200,
+        headers: {
+          'subscription-userinfo': `upload=${6 * gib}; download=${5 * gib}; total=${10 * gib}; expire=0`
+        },
+        body: 'vless://22222222-2222-4222-8222-222222222222@example.com:443#statsless\n'
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [panel], {
+    sources: [{ name: 'authoritative', baseUrl: 'https://usage.example/sub', proxy: 'direct' }],
+    logger: { log() {} }
+  });
+
+  assert.equal(result.checked, 1);
+  assert.deepEqual(result.disabled.map((item) => item.subId), ['statsless-sub']);
+  assert.equal(requests.filter((request) => request.options.method === 'POST').length, 1);
+  assert.equal(result.skipped.some((item) => item.reason === 'client stats missing'), false);
+});
+
 test('quota worker retries Xray disables and skips direct panels after Xray failure', async () => {
   const gib = 1024 ** 3;
   const xrayPanel = {

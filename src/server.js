@@ -283,7 +283,7 @@ async function handleSettingsPost(config, request, response, pathname) {
 }
 
 async function loadClientsView(config, runtime, request, options = {}) {
-  const includeSubscriptionUsage = options.includeSubscriptionUsage === true;
+  const includeSubscriptionUsage = options.includeSubscriptionUsage !== false;
   const result = await listCreatedPanelClients(runtime, config.panels, {
     sources: config.sources,
     concurrency: config.worker.concurrency,
@@ -570,7 +570,7 @@ export async function createServer(config = loadConfig()) {
         let result;
         try {
           result = await loadClientsView(config, runtime, request, {
-            includeSubscriptionUsage: url.searchParams.get('usage') === 'subscription'
+            includeSubscriptionUsage: url.searchParams.get('usage') !== 'panel'
           });
         } catch (error) {
           sendHtml(
