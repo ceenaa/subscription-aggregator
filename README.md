@@ -31,19 +31,15 @@ Limit parallel client updates with:
 WORKER_CONCURRENCY=5
 ```
 
-The worker loads the same panel/inbound config used by `/inbounds`, calls each panel's `inbounds/list` endpoint, finds each enabled configured inbound ID, and matches clients by `subId`. If a client does not exist on every enabled configured inbound, it is skipped.
+The worker loads the same panel/inbound config used by `/inbounds`, calls each physical panel's `inbounds/list` endpoint once per run, finds each enabled configured inbound ID, and matches clients by `subId`. If multiple configured inbounds share the same panel URL, cookie, and route, the list response is reused. If a client does not exist on every enabled configured inbound, it is skipped.
 
 The worker only evaluates matched clients that are active on at least one inbound. If the client is already disabled on every enabled configured inbound, it is skipped.
 
-When subscription sources are configured, the worker uses the same normalized `Subscription-Userinfo` calculation as `/sub/:token`. If subscription usage cannot be loaded or complete usage headers are missing, that client is skipped instead of falling back to panel stats.
+The worker evaluates quota from the panel `inbounds/list` response only. This keeps a normal run to one list request per physical panel, plus update/verification requests only for clients that must be disabled.
 
-With subscription sources configured, a matched client is disabled on every enabled configured inbound when:
+A matched client is disabled when any quota check is true:
 
-- normalized subscription usage is at or over normalized subscription quota
-
-If no subscription sources are configured, the worker falls back to panel stats. In that fallback mode, a matched client is disabled when any quota check is true:
-
-- any inbound total is nonzero and `allTime >= total`
+- any inbound total is nonzero and current `up + down >= total`, falling back to `allTime >= total` when current usage is unavailable
 - all inbound totals are nonzero and normalized combined usage is at or over the highest quota
 
 For the panel-stat fallback combined check, the worker scales lower-quota panels up into the highest-quota panel's units:

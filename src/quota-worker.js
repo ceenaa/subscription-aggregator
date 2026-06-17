@@ -2,9 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from './env.js';
 import { loadConfig } from './config.js';
 import { createSubscriptionFetcher } from './runtime.js';
-import { aggregateSubscriptions } from './subscription.js';
-import { sourcesForToken } from './source-url.js';
-import { normalizeCombinedUsage, normalizeQuotaUsage, summarizeNormalizedUsage } from './usage.js';
+import { normalizeCombinedUsage, normalizeQuotaUsage } from './usage.js';
 import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 
 function requirePanelField(panel, field) {
@@ -118,8 +116,6 @@ function skippedReason(item) {
   if (item.reason === 'already disabled') return 'already disabled';
   if (item.reason === 'client stats missing') return 'client stats missing';
   if (item.reason === 'client update id missing') return 'client update id missing';
-  if (item.reason === 'subscription usage missing') return 'subscription usage missing';
-  if (item.reason?.startsWith('subscription usage unavailable:')) return 'subscription usage unavailable';
   if (item.reason === 'configured inbound is missing from one or more panels') {
     return 'configured inbound missing';
   }
@@ -194,6 +190,11 @@ export function buildListInboundsRequest(panel) {
     method: 'GET',
     headers: panelHeaders(panel, url)
   };
+}
+
+function panelListCacheKey(panel) {
+  const request = buildListInboundsRequest(panel);
+  return [panel.proxy || 'direct', request.url, panel.cookie || ''].join('\u0000');
 }
 
 export function buildOnlineClientsRequest(panel) {
@@ -318,64 +319,6 @@ export function evaluateQuotaPair(first, second) {
   return evaluateQuotaGroup([first, second]);
 }
 
-function evaluateSubscriptionQuotaUsage(usage) {
-  const reasons = [];
-
-  if (usage.total > 0 && usage.used >= usage.total) {
-    reasons.push('subscription normalized quota exceeded');
-  }
-
-  return {
-    exceeded: reasons.length > 0,
-    reasons,
-    combinedTotal: usage.total,
-    combinedAllTime: usage.used,
-    combinedScale: usage.scale || 0,
-    combinedScales: usage.scales || []
-  };
-}
-
-async function loadSubscriptionQuotaUsage(runtime, sources, subId) {
-  if (typeof runtime.fetch !== 'function') {
-    throw new Error('runtime.fetch is required to load subscription usage');
-  }
-
-  const result = await aggregateSubscriptions(sourcesForToken(sources, subId), runtime.fetch);
-  return summarizeNormalizedUsage(result.results);
-}
-
-async function evaluateQuotaGroupForWorker(runtime, group, options) {
-  const sources = options.sources || [];
-  if (sources.length === 0) {
-    return { evaluation: evaluateQuotaGroup(group.entries), skipped: null };
-  }
-
-  try {
-    const usage = await loadSubscriptionQuotaUsage(runtime, sources, group.subId);
-    if (!usage.hasData) {
-      return {
-        evaluation: null,
-        skipped: {
-          subId: group.subId,
-          email: group.entries.find((entry) => entry.email)?.email || '',
-          reason: 'subscription usage missing'
-        }
-      };
-    }
-
-    return { evaluation: evaluateSubscriptionQuotaUsage(usage), skipped: null };
-  } catch (error) {
-    return {
-      evaluation: null,
-      skipped: {
-        subId: group.subId,
-        email: group.entries.find((entry) => entry.email)?.email || '',
-        reason: `subscription usage unavailable: ${error.message}`
-      }
-    };
-  }
-}
-
 async function requestPanelJson(runtime, panel, request) {
   const response = await runtime.request(
     {
@@ -394,9 +337,17 @@ async function requestPanelJson(runtime, panel, request) {
 }
 
 export async function fetchPanelInbound(runtime, panel) {
+  const inbounds = await fetchPanelInbounds(runtime, panel);
+  return panelInboundState(panel, inbounds);
+}
+
+export async function fetchPanelInbounds(runtime, panel) {
   const request = buildListInboundsRequest(panel);
   const payload = await requestPanelJson(runtime, panel, request);
-  const inbounds = Array.isArray(payload.obj) ? payload.obj : [];
+  return Array.isArray(payload.obj) ? payload.obj : [];
+}
+
+function panelInboundState(panel, inbounds) {
   const inbound = inbounds.find((item) => String(item.id) === String(panel.inboundId));
 
   return {
@@ -404,6 +355,21 @@ export async function fetchPanelInbound(runtime, panel) {
     inbound: inbound || null,
     clients: inbound ? indexInboundClients(panel, inbound) : new Map()
   };
+}
+
+async function fetchConfiguredPanelInbounds(runtime, panels) {
+  const inboundsByPanel = new Map();
+
+  for (const panel of panels) {
+    const key = panelListCacheKey(panel);
+    if (!inboundsByPanel.has(key)) {
+      inboundsByPanel.set(key, fetchPanelInbounds(runtime, panel));
+    }
+  }
+
+  return Promise.all(
+    panels.map(async (panel) => panelInboundState(panel, await inboundsByPanel.get(panelListCacheKey(panel))))
+  );
 }
 
 export async function fetchPanelOnlineClients(runtime, panel) {
@@ -451,11 +417,7 @@ async function processQuotaGroup(runtime, group, options) {
   const dryRun = options.dryRun === true;
   const disableRetries = Number.isInteger(options.disableRetries) ? options.disableRetries : 3;
   const skipped = [];
-  const { evaluation, skipped: usageSkipped } = await evaluateQuotaGroupForWorker(runtime, group, options);
-  if (usageSkipped) {
-    skipped.push(usageSkipped);
-    return { disabled: null, partialDisabled: null, skipped };
-  }
+  const evaluation = evaluateQuotaGroup(entries);
   if (!evaluation.exceeded) return { disabled: null, partialDisabled: null, skipped };
 
   const targets = entries.filter(clientLooksEnabled);
@@ -547,13 +509,12 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
   const logger = options.logger || console;
   const startedAt = Date.now();
   const concurrency = workerConcurrency(options.concurrency);
-  const hasSubscriptionSources = (options.sources || []).length > 0;
   const configuredPanels = panels.filter(Boolean);
   if (configuredPanels.length < 1) {
     throw new Error('At least one configured panel inbound is required before running the quota worker');
   }
 
-  const panelStates = await Promise.all(configuredPanels.map((panel) => fetchPanelInbound(runtime, panel)));
+  const panelStates = await fetchConfiguredPanelInbounds(runtime, configuredPanels);
 
   const disabled = [];
   const partialDisabled = [];
@@ -607,19 +568,17 @@ export async function enforcePanelQuota(runtime, panels, options = {}) {
       continue;
     }
 
-    if (!hasSubscriptionSources) {
-      const missingStatsPanels = presentEntries
-        .filter((entry) => !entry.stat)
-        .map((entry) => entry.panel.name);
-      if (missingStatsPanels.length > 0) {
-        skipped.push({
-          subId,
-          email,
-          reason: 'client stats missing',
-          missingStatsPanels
-        });
-        continue;
-      }
+    const missingStatsPanels = presentEntries
+      .filter((entry) => !entry.stat)
+      .map((entry) => entry.panel.name);
+    if (missingStatsPanels.length > 0) {
+      skipped.push({
+        subId,
+        email,
+        reason: 'client stats missing',
+        missingStatsPanels
+      });
+      continue;
     }
 
     if (presentEntries.every((entry) => !clientLooksEnabled(entry))) {
@@ -671,8 +630,7 @@ async function main() {
   try {
     await enforcePanelQuota(runtime, config.panels, {
       ...options,
-      concurrency: options.concurrency || config.worker.concurrency,
-      sources: config.sources
+      concurrency: options.concurrency || config.worker.concurrency
     });
   } finally {
     await runtime.close();
