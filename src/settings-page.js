@@ -80,7 +80,7 @@ function panelForm(panel = null) {
         ${field('name', 'Name', panel?.name || '', { required: true })}
         ${field('addClientUrl', 'Add Client URL', panel?.add_client_url || '', {
           required: true,
-          placeholder: 'https://panel.example/path/api/inbounds/addClient'
+          placeholder: 'https://panel.example/path/api/clients/add'
         })}
         <label>
           <span>API Route</span>

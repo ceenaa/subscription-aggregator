@@ -64,18 +64,17 @@ function baseEnv(overrides = {}) {
 }
 
 function applyInboundClientUpdate(inbound, body) {
-  const params = new URLSearchParams(body);
-  const updatedClient = JSON.parse(params.get('settings')).clients[0];
+  const updatedClient = JSON.parse(body);
   const settings = JSON.parse(inbound.settings);
   settings.clients = settings.clients.map((client) =>
-    (updatedClient.id && client.id === updatedClient.id) || client.subId === updatedClient.subId
+    client.subId === updatedClient.subId || client.email === updatedClient.email
       ? { ...client, ...updatedClient }
       : client
   );
   inbound.settings = JSON.stringify(settings);
 
   for (const stat of inbound.clientStats || []) {
-    if (stat.subId === updatedClient.subId && updatedClient.enable !== undefined) {
+    if ((stat.subId === updatedClient.subId || stat.email === updatedClient.email) && updatedClient.enable !== undefined) {
       stat.enable = updatedClient.enable;
     }
   }
@@ -404,7 +403,7 @@ test('shares one Xray proxy startup across concurrent routed requests', async ()
   assert.equal(stops, 1);
 });
 
-test('builds 3x-ui addClient form requests without real panel values', () => {
+test('builds 3x-ui addClient JSON requests without real panel values', () => {
   const panel = {
     name: 'first-panel',
     addClientUrl: 'https://panel.example/secret/panel/api/inbounds/addClient',
@@ -424,22 +423,23 @@ test('builds 3x-ui addClient form requests without real panel values', () => {
   };
 
   const request = buildAddClientRequest(panel, input);
-  const body = new URLSearchParams(request.body);
-  const settings = JSON.parse(body.get('settings'));
+  const body = JSON.parse(request.body);
 
-  assert.equal(body.get('id'), '4');
-  assert.equal(settings.clients[0].id, input.clientId);
-  assert.equal(settings.clients[0].email, input.email);
-  assert.equal(settings.clients[0].subId, input.subId);
-  assert.equal(settings.clients[0].totalGB, 0);
-  assert.equal(settings.clients[0].expiryTime, 0);
-  assert.equal(settings.clients[0].enable, true);
-  assert.equal(settings.clients[0].flow, '');
-  assert.equal(settings.clients[0].limitIp, 0);
-  assert.equal(settings.clients[0].tgId, '');
-  assert.equal(settings.clients[0].comment, '');
+  assert.equal(request.url, 'https://panel.example/secret/panel/api/clients/add');
+  assert.deepEqual(body.inboundIds, [4]);
+  assert.equal(body.client.id, input.clientId);
+  assert.equal(body.client.email, input.email);
+  assert.equal(body.client.subId, input.subId);
+  assert.equal(body.client.totalGB, 0);
+  assert.equal(body.client.expiryTime, 0);
+  assert.equal(body.client.enable, true);
+  assert.equal(body.client.flow, '');
+  assert.equal(body.client.limitIp, 0);
+  assert.equal(body.client.tgId, 0);
+  assert.equal(body.client.comment, '');
   assert.equal(request.headers.Cookie, panel.cookie);
   assert.equal(request.headers.Origin, 'https://panel.example');
+  assert.equal(request.headers['Content-Type'], 'application/json');
   assert.equal(request.method, 'POST');
 });
 
@@ -503,7 +503,7 @@ test('applies an inbound XTLS vision flow to addClient requests', () => {
   assert.equal(request.settings.clients[0].flow, 'xtls-rprx-vision');
 });
 
-test('adds email suffixes when creating clients on duplicate panel URLs', async () => {
+test('batches same-server inbounds into one addClient request', async () => {
   const input = {
     clientId: '11111111-1111-4111-8111-111111111111',
     email: 'client@example.com',
@@ -537,8 +537,10 @@ test('adds email suffixes when creating clients on duplicate panel URLs', async 
       totalGbRatio: 1
     }
   ];
+  const requests = [];
   const runtime = {
-    async request() {
+    async request(target, options) {
+      requests.push({ name: target.name, body: JSON.parse(options.body) });
       return {
         statusCode: 200,
         headers: {},
@@ -549,11 +551,22 @@ test('adds email suffixes when creating clients on duplicate panel URLs', async 
 
   const results = await addClientToPanels(runtime, panels, input);
 
-  assert.deepEqual(
-    results.map((result) => result.request.settings.clients[0].email),
-    ['client@example.com-1', 'client@example.com-2', 'client@example.com']
-  );
-  assert.equal(input.email, 'client@example.com');
+  // Two servers → two API requests (not three)
+  assert.equal(requests.length, 2);
+
+  // same-panel.example: one request with both inbound IDs
+  assert.deepEqual(requests[0].body.inboundIds, [4, 6]);
+  assert.equal(requests[0].body.client.email, 'client@example.com');
+
+  // other-panel.example: separate request with its own inbound ID
+  assert.deepEqual(requests[1].body.inboundIds, [8]);
+  assert.equal(requests[1].body.client.email, 'client@example.com');
+
+  // All three panel entries report success
+  assert.equal(results.every((r) => r.ok), true);
+  assert.equal(results[0].panel.name, 'first-panel');
+  assert.equal(results[1].panel.name, 'second-panel');
+  assert.equal(results[2].panel.name, 'third-panel');
 });
 
 test('creates clients through Xray panels before direct panels and skips direct after Xray failure', async () => {
@@ -629,21 +642,20 @@ test('builds 3x-ui list and update requests for the quota worker', () => {
   const listRequest = buildListInboundsRequest(panel);
   const onlineRequest = buildOnlineClientsRequest(panel);
   const updateRequest = buildUpdateClientRequest(panel, inbound, client);
-  const updateBody = new URLSearchParams(updateRequest.body);
-  const settings = JSON.parse(updateBody.get('settings'));
+  const updateBody = JSON.parse(updateRequest.body);
 
   assert.equal(listRequest.url, 'https://panel.example/secret/panel/api/inbounds/list');
   assert.equal(listRequest.headers.Cookie, panel.cookie);
-  assert.equal(onlineRequest.url, 'https://panel.example/secret/panel/api/inbounds/onlines');
+  assert.equal(onlineRequest.url, 'https://panel.example/secret/panel/api/clients/onlines');
   assert.equal(onlineRequest.method, 'POST');
   assert.equal(onlineRequest.body, '');
   assert.equal(onlineRequest.headers.Cookie, panel.cookie);
   assert.equal(onlineRequest.headers.Origin, 'https://panel.example');
   assert.equal(onlineRequest.headers['Content-Type'], 'application/x-www-form-urlencoded; charset=UTF-8');
-  assert.equal(updateRequest.url, 'https://panel.example/secret/panel/api/inbounds/updateClient/11111111-1111-4111-8111-111111111111');
-  assert.equal(updateBody.get('id'), '4');
-  assert.equal(settings.clients[0].enable, false);
-  assert.equal(settings.clients[0].totalGB, 5 * 1024 ** 3);
+  assert.equal(updateRequest.url, 'https://panel.example/secret/panel/api/clients/update/client%40example.com');
+  assert.equal(updateRequest.headers['Content-Type'], 'application/json');
+  assert.equal(updateBody.enable, false);
+  assert.equal(updateBody.totalGB, 5 * 1024 ** 3);
   assert.equal(updateRequest.headers.Origin, 'https://panel.example');
 });
 
@@ -1155,12 +1167,9 @@ test('updates created clients while preserving untouched client fields', async (
         };
       }
 
-      const body = new URLSearchParams(options.body);
-      const settings = JSON.parse(body.get('settings'));
       updateRequests.push({
         panel: target.name,
-        id: body.get('id'),
-        client: settings.clients[0]
+        client: JSON.parse(options.body)
       });
 
       return {
@@ -1185,8 +1194,6 @@ test('updates created clients while preserving untouched client fields', async (
 
   assert.equal(result.ok, true);
   assert.equal(updateRequests.length, 2);
-  assert.equal(updateRequests[0].id, '4');
-  assert.equal(updateRequests[1].id, '8');
   assert.equal(updateRequests[0].client.email, 'shared-1');
   assert.equal(updateRequests[1].client.email, 'shared-2');
   assert.equal(updateRequests[0].client.subId, 'shared-sub');
@@ -1579,7 +1586,7 @@ test('quota worker ignores subscription sources and uses panel stats', async () 
   assert.deepEqual(result.disabled.map((item) => item.subId), ['below-sub']);
   assert.equal(result.partialDisabled.length, 0);
   assert.equal(updateRequests.length, 1);
-  const updatedClient = JSON.parse(new URLSearchParams(updateRequests[0].options.body).get('settings')).clients[0];
+  const updatedClient = JSON.parse(updateRequests[0].options.body);
   assert.equal(updatedClient.subId, 'below-sub');
 });
 

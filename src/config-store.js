@@ -370,8 +370,8 @@ function validateUrl(value, field, options = {}) {
     throw new Error(`${field} must be a valid URL`);
   }
 
-  if (options.addClientPath && !/\/api\/inbounds\/addClient\/?$/.test(url.pathname)) {
-    throw new Error(`${field} must end with /api/inbounds/addClient`);
+  if (options.addClientPath && !/\/api\/(?:inbounds\/addClient|clients\/add)\/?$/.test(url.pathname)) {
+    throw new Error(`${field} must end with /api/inbounds/addClient or /api/clients/add`);
   }
 
   return text;

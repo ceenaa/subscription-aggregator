@@ -102,7 +102,10 @@ function numberOrZero(value) {
 function panelApiIdentity(panel) {
   try {
     const url = new URL(panel.addClientUrl);
-    return `${url.origin}${url.pathname.replace(/\/api\/inbounds\/addClient\/?$/, '/api/inbounds')}\u0000${panel.proxy || ''}`;
+    const root = url.pathname
+      .replace(/\/api\/inbounds\/addClient\/?$/, '')
+      .replace(/\/api\/clients\/add\/?$/, '');
+    return `${url.origin}${root}/api\u0000${panel.proxy || ''}`;
   } catch {
     return `${panel.addClientUrl || ''}\u0000${panel.proxy || ''}`;
   }
