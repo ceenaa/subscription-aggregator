@@ -1196,8 +1196,8 @@ test('updates created clients while preserving untouched client fields', async (
   assert.equal(updateRequests.length, 2);
   assert.equal(updateRequests[0].client.email, 'shared-1');
   assert.equal(updateRequests[1].client.email, 'shared-2');
-  assert.equal(updateRequests[0].client.subId, 'shared-sub');
-  assert.equal(updateRequests[1].client.subId, 'shared-sub');
+  assert.equal(updateRequests[0].client.subId, undefined);
+  assert.equal(updateRequests[1].client.subId, undefined);
   assert.equal(updateRequests[0].client.comment, 'keep me');
   assert.equal(updateRequests[0].client.created_at, 1780173876000);
   assert.equal(updateRequests[0].client.totalGB, 24 * gib);
@@ -1587,7 +1587,7 @@ test('quota worker ignores subscription sources and uses panel stats', async () 
   assert.equal(result.partialDisabled.length, 0);
   assert.equal(updateRequests.length, 1);
   const updatedClient = JSON.parse(updateRequests[0].options.body);
-  assert.equal(updatedClient.subId, 'below-sub');
+  assert.equal(updatedClient.subId, undefined);
 });
 
 test('quota worker retries Xray disables and skips direct panels after Xray failure', async () => {
