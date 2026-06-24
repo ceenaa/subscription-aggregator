@@ -1,6 +1,7 @@
 import {
   buildUpdateClientRequest,
   clientLooksEnabled,
+  fetchPanelCsrfToken,
   fetchPanelInbound,
   fetchPanelOnlineClients
 } from './quota-worker.js';
@@ -295,6 +296,11 @@ function parsePanelPayload(body, panelName) {
 
 async function updatePanelClient(runtime, entry, updates) {
   const request = buildUpdateClientRequest(entry.panel, entry.inbound, entry.client, entry.stat, updates);
+  const headers = { ...request.headers };
+  if (entry.panel.cookie) {
+    const token = await fetchPanelCsrfToken(runtime, entry.panel);
+    if (token) headers['X-CSRF-Token'] = token;
+  }
   const response = await runtime.request(
     {
       name: entry.panel.name,
@@ -303,7 +309,7 @@ async function updatePanelClient(runtime, entry, updates) {
     },
     {
       method: request.method,
-      headers: request.headers,
+      headers,
       body: request.body
     }
   );
