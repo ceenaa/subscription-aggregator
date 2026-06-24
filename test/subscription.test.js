@@ -1061,6 +1061,7 @@ test('summarizes multiple inbounds from the same panel once', async () => {
     clientStats: []
   };
   let onlineCalls = 0;
+  let listCalls = 0;
   const runtime = {
     async request(target) {
       if (target.url.endsWith('/onlines')) {
@@ -1072,6 +1073,7 @@ test('summarizes multiple inbounds from the same panel once', async () => {
         };
       }
 
+      listCalls += 1;
       return {
         statusCode: 200,
         headers: {},
@@ -1090,6 +1092,7 @@ test('summarizes multiple inbounds from the same panel once', async () => {
   });
 
   assert.equal(onlineCalls, 1);
+  assert.equal(listCalls, 1);
   assert.equal(result.panels.length, 1);
   assert.equal(result.panels[0].name, 'cdn-panel');
   assert.equal(result.panels[0].inboundCount, 2);
@@ -1191,7 +1194,7 @@ test('counts shared same-panel client usage once on the clients page', async () 
   assert.doesNotMatch(html, /12\.00 GB/);
 });
 
-test('collapses same-panel client status rows with legacy suffix emails', async () => {
+test('uses one logical status for a same-panel shared client', async () => {
   const firstInboundPanel = {
     name: 'aws',
     panelName: 'edge-panel',
@@ -1213,14 +1216,14 @@ test('collapses same-panel client status rows with legacy suffix emails', async 
   const firstInbound = {
     id: 6,
     settings: JSON.stringify({
-      clients: [{ email: 'Mobbim-1', subId: 'mobbim-sub', enable: false }]
+      clients: [{ email: '57udrm6b-1', subId: 'mobbim-sub', enable: false }]
     }),
     clientStats: []
   };
   const secondInbound = {
     id: 4,
     settings: JSON.stringify({
-      clients: [{ email: 'Mobbim-2', subId: 'mobbim-sub', enable: true }]
+      clients: [{ email: '57udrm6b-1', subId: 'mobbim-sub', enable: true }]
     }),
     clientStats: []
   };
@@ -1230,7 +1233,7 @@ test('collapses same-panel client status rows with legacy suffix emails', async 
         return {
           statusCode: 200,
           headers: {},
-          body: JSON.stringify({ success: true, obj: ['Mobbim-2'] })
+          body: JSON.stringify({ success: true, obj: ['57udrm6b-1'] })
         };
       }
 
@@ -1247,12 +1250,12 @@ test('collapses same-panel client status rows with legacy suffix emails', async 
   });
 
   assert.equal(result.clients.length, 1);
-  assert.equal(result.clients[0].enabledPanels, 0);
+  assert.equal(result.clients[0].enabledPanels, 1);
   assert.equal(result.clients[0].totalPanels, 1);
   assert.equal(result.clients[0].panels.length, 1);
   assert.equal(result.clients[0].panels[0].panel, 'edge-panel');
-  assert.equal(result.clients[0].panels[0].status, 'Partial');
-  assert.equal(result.clients[0].panels[0].email, 'Mobbim');
+  assert.equal(result.clients[0].panels[0].status, 'Active');
+  assert.equal(result.clients[0].panels[0].email, '57udrm6b-1');
 });
 
 test('updates created clients while preserving untouched client fields', async () => {
@@ -1378,6 +1381,89 @@ test('updates created clients while preserving untouched client fields', async (
   assert.equal(updateRequests[1].client.expiryTime, quickExpiryTime);
   assert.equal(updateRequests[0].client.enable, true);
   assert.equal(updateRequests[1].client.enable, true);
+});
+
+test('updates a shared same-panel client once', async () => {
+  const gib = 1024 ** 3;
+  const basePanel = {
+    panelName: 'edge-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://edge.example/secret/panel/api/inbounds/addClient',
+    proxy: 'direct',
+    totalGbRatio: 1
+  };
+  const firstPanel = {
+    ...basePanel,
+    name: 'edge 443',
+    inboundId: '4'
+  };
+  const secondPanel = {
+    ...basePanel,
+    name: 'edge 8443',
+    inboundId: '5'
+  };
+  const sharedClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'shared',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 10 * gib,
+    tgId: 0
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [{ subId: 'shared-sub', uuid: sharedClient.id, total: 10 * gib, allTime: 2 * gib }]
+  };
+  const secondInbound = {
+    id: 5,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [{ subId: 'shared-sub', uuid: sharedClient.id, total: 10 * gib, allTime: 2 * gib }]
+  };
+  const updateRequests = [];
+  let listCalls = 0;
+  const runtime = {
+    async request(target, options) {
+      if (target.url.endsWith('/list')) {
+        listCalls += 1;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: [firstInbound, secondInbound] })
+        };
+      }
+
+      updateRequests.push({
+        panel: target.name,
+        client: JSON.parse(options.body)
+      });
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          msg: 'Inbound client has been updated.',
+          obj: null
+        })
+      };
+    }
+  };
+
+  const result = await updateCreatedPanelClient(runtime, [firstPanel, secondPanel], {
+    subId: 'shared-sub',
+    status: 'disable',
+    addGB: '2'
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.results.length, 1);
+  assert.equal(listCalls, 1);
+  assert.equal(updateRequests.length, 1);
+  assert.equal(updateRequests[0].client.email, 'shared');
+  assert.equal(updateRequests[0].client.enable, false);
+  assert.equal(updateRequests[0].client.totalGB, 12 * gib);
+  assert.equal(updateRequests[0].client.subId, undefined);
 });
 
 test('updates clients through Xray panels before direct panels and skips direct after Xray failure', async () => {
@@ -1727,6 +1813,86 @@ test('quota worker counts shared same-panel client usage once before enforcing',
   assert.equal(result.partialDisabled.length, 0);
   assert.equal(requests.filter((request) => request.target.url.endsWith('/list')).length, 1);
   assert.equal(requests.filter((request) => request.options.method === 'POST').length, 0);
+});
+
+test('quota worker disables a shared same-panel client once', async () => {
+  const gib = 1024 ** 3;
+  const basePanel = {
+    panelName: 'edge-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://shared-panel.example/secret/panel/api/inbounds/addClient',
+    proxy: 'direct'
+  };
+  const firstPanel = {
+    ...basePanel,
+    name: 'shared first',
+    inboundId: '4'
+  };
+  const secondPanel = {
+    ...basePanel,
+    name: 'shared second',
+    inboundId: '5'
+  };
+  const sharedClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'shared',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [
+      { email: 'shared', subId: 'shared-sub', enable: true, total: 10 * gib, allTime: 12 * gib }
+    ]
+  };
+  const secondInbound = {
+    id: 5,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [
+      { email: 'shared', subId: 'shared-sub', enable: true, total: 10 * gib, allTime: 12 * gib }
+    ]
+  };
+  const requests = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+
+      if (target.url.endsWith('/list')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: [firstInbound, secondInbound] })
+        };
+      }
+
+      applyInboundClientUpdate(firstInbound, options.body);
+      applyInboundClientUpdate(secondInbound, options.body);
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          success: true,
+          msg: 'Inbound client has been updated.',
+          obj: null
+        })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+    logger: { log() {} }
+  });
+  const updateRequests = requests.filter((request) => request.options.method === 'POST');
+
+  assert.equal(result.checked, 1);
+  assert.equal(result.disabled.length, 1);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.equal(result.disabled[0].panels.length, 1);
+  assert.equal(updateRequests.length, 1);
+  assert.equal(JSON.parse(updateRequests[0].options.body).email, 'shared');
 });
 
 test('quota worker ignores subscription sources and uses panel stats', async () => {

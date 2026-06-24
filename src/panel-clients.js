@@ -2,8 +2,9 @@ import {
   buildUpdateClientRequest,
   clientLooksEnabled,
   fetchPanelCsrfToken,
-  fetchPanelInbound,
-  fetchPanelOnlineClients
+  fetchPanelInbounds,
+  fetchPanelOnlineClients,
+  indexInboundClients
 } from './quota-worker.js';
 import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 import { aggregateSubscriptions } from './subscription.js';
@@ -82,7 +83,7 @@ function panelUsage(entries) {
   );
   const currentEntry = usageEntries[0] || currentUsageEntry(firstEntry);
   const usage = normalizeQuotaUsage(currentEntry);
-  const status = statusForEntries(panelEntries);
+  const status = panelEntries.some(clientLooksEnabled) ? 'Active' : 'Inactive';
   const quotaDivisors = uniqueStrings(panelEntries.map((entry) => entry.quotaDivisor || 1));
   const proxies = uniqueStrings(panelEntries.map((entry) => entry.panel.proxy));
 
@@ -137,12 +138,41 @@ function panelApiIdentity(panel) {
   }
 }
 
+function panelListKey(panel) {
+  return `${panelApiIdentity(panel)}\u0000${panel.cookie || ''}`;
+}
+
 function panelGroupKey(panel) {
   if (panel.panelDbId !== undefined && panel.panelDbId !== null) {
     return `db:${panel.panelDbId}`;
   }
 
   return panelApiIdentity(panel);
+}
+
+function panelClientMutationKey(entry) {
+  const email = entry.client?.email || entry.stat?.email || entry.email || '';
+  if (!email) return '';
+  return `${panelGroupKey(entry.panel)}\u0000${email}`;
+}
+
+function deduplicatePanelClientMutationEntries(entries) {
+  const deduplicated = [];
+  const seen = new Set();
+
+  for (const entry of entries) {
+    const key = panelClientMutationKey(entry);
+    if (!key) {
+      deduplicated.push(entry);
+      continue;
+    }
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    deduplicated.push(entry);
+  }
+
+  return deduplicated;
 }
 
 function groupByPanel(items, getPanel = (item) => item) {
@@ -164,6 +194,31 @@ function groupByPanel(items, getPanel = (item) => item) {
   }
 
   return groups;
+}
+
+function panelStateFromInbounds(panel, inbounds) {
+  const inbound = inbounds.find((item) => String(item.id) === String(panel.inboundId));
+
+  return {
+    panel,
+    inbound: inbound || null,
+    clients: inbound ? indexInboundClients(panel, inbound) : new Map()
+  };
+}
+
+async function fetchConfiguredPanelStates(runtime, panels) {
+  const inboundsByPanel = new Map();
+
+  for (const panel of panels) {
+    const key = panelListKey(panel);
+    if (!inboundsByPanel.has(key)) {
+      inboundsByPanel.set(key, fetchPanelInbounds(runtime, panel));
+    }
+  }
+
+  return Promise.all(
+    panels.map(async (panel) => panelStateFromInbounds(panel, await inboundsByPanel.get(panelListKey(panel))))
+  );
 }
 
 async function loadPanelOnlineState(runtime, panel) {
@@ -367,7 +422,7 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
   }
 
   const [panelStates, onlineStates] = await Promise.all([
-    Promise.all(configuredPanels.map((panel) => fetchPanelInbound(runtime, panel))),
+    fetchConfiguredPanelStates(runtime, configuredPanels),
     Promise.all(
       groupByPanel(configuredPanels).map(async (group) => [
         group.key,
@@ -459,9 +514,7 @@ export async function updateCreatedPanelClient(runtime, panels, input) {
     throw new Error('At least one configured panel inbound is required to update clients');
   }
 
-  const panelStates = await Promise.all(
-    configuredPanels.map((panel) => fetchPanelInbound(runtime, panel))
-  );
+  const panelStates = await fetchConfiguredPanelStates(runtime, configuredPanels);
   const entries = panelStates.map((state) => state.clients.get(input.subId));
   const missingPanels = panelStates
     .filter((state, index) => !entries[index])
@@ -471,7 +524,7 @@ export async function updateCreatedPanelClient(runtime, panels, input) {
     throw new Error(`Client ${input.subId} is missing from ${missingPanels.join(', ')}`);
   }
 
-  const plannedUpdates = entries.map((entry) => ({
+  const plannedUpdates = deduplicatePanelClientMutationEntries(entries).map((entry) => ({
     entry,
     updates: updateFieldsForEntry(entry, input)
   }));
