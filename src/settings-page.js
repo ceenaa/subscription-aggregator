@@ -86,6 +86,27 @@ function panelForm(panel = null) {
           <span>API Route</span>
           <select name="proxy">${proxyOptions(panel?.proxy || 'direct')}</select>
         </label>
+        ${field('totalGbRatio', 'Total GB Ratio', panel?.total_gb_ratio ?? '1', {
+          type: 'number',
+          min: '0.0001',
+          step: '0.0001',
+          required: true
+        })}
+        ${field('quotaDivisor', 'Quota Divisor', panel?.quota_divisor ?? '1', {
+          type: 'number',
+          min: '0.0001',
+          step: '0.0001',
+          required: true
+        })}
+        <label class="toggle-row">
+          <span>XTLS Vision Flow</span>
+          <input
+            type="checkbox"
+            name="xtlsVisionFlow"
+            value="true"
+            ${checked(panel ? panel.xtls_vision_flow : false)}
+          >
+        </label>
         <label class="toggle-row">
           <span>Enabled</span>
           <input type="checkbox" name="enabled" value="true" ${checked(panel ? panel.enabled : true)}>
@@ -108,18 +129,6 @@ function inboundForm(panels, inbound = null) {
         ${panelSelect(panels, inbound?.panel_id || '')}
         ${field('name', 'Name', inbound?.name || '', { placeholder: 'EU 443' })}
         ${field('inboundId', 'Inbound ID', inbound?.inbound_id || '', { required: true })}
-        ${field('totalGbRatio', 'Total GB Ratio', inbound?.total_gb_ratio ?? '1', {
-          type: 'number',
-          min: '0.0001',
-          step: '0.0001',
-          required: true
-        })}
-        ${field('quotaDivisor', 'Quota Divisor', inbound?.quota_divisor ?? '1', {
-          type: 'number',
-          min: '0.0001',
-          step: '0.0001',
-          required: true
-        })}
         ${field('subscriptionName', 'Subscription Name', inbound?.subscription_name || '')}
         ${field('subscriptionBaseUrl', 'Subscription Base URL', inbound?.subscription_base_url || '', {
           placeholder: 'https://provider.example/sub'
@@ -127,15 +136,6 @@ function inboundForm(panels, inbound = null) {
         <label>
           <span>Subscription Route</span>
           <select name="subscriptionProxy">${proxyOptions(inbound?.subscription_proxy || '', true)}</select>
-        </label>
-        <label class="toggle-row">
-          <span>XTLS Vision Flow</span>
-          <input
-            type="checkbox"
-            name="xtlsVisionFlow"
-            value="true"
-            ${checked(inbound ? inbound.xtls_vision_flow : false)}
-          >
         </label>
         <label class="toggle-row">
           <span>Enabled</span>
@@ -170,7 +170,14 @@ function panelList(panels) {
           <div class="entry-heading">
             <div>
               <h3>${escapeHtml(panel.name)}</h3>
-              <p>${escapeHtml(panel.proxy)} API route · ${escapeHtml(panel.inboundCount)} inbounds · ${panel.enabled ? 'enabled' : 'disabled'}</p>
+              <p>
+                ${escapeHtml(panel.proxy)} API route
+                · ${escapeHtml(panel.inboundCount)} inbounds
+                · ratio ${escapeHtml(panel.total_gb_ratio ?? 1)}
+                · divisor ${escapeHtml(panel.quota_divisor ?? 1)}
+                ${panel.xtls_vision_flow ? ' · XTLS vision flow' : ''}
+                · ${panel.enabled ? 'enabled' : 'disabled'}
+              </p>
             </div>
             ${deleteForm('/settings/panels/delete', panel.id, 'Delete')}
           </div>
@@ -196,8 +203,6 @@ function inboundList(panels, inbounds) {
               <p>
                 ${escapeHtml(inbound.panelName)}
                 · inbound ${escapeHtml(inbound.inbound_id)}
-                · ratio ${escapeHtml(inbound.total_gb_ratio)}
-                ${inbound.xtls_vision_flow ? ' · XTLS vision flow' : ''}
                 · ${inbound.enabled ? 'enabled' : 'disabled'}
               </p>
             </div>
@@ -350,7 +355,7 @@ export function renderSettingsPage({
     }
 
     .panel-fields {
-      grid-template-columns: minmax(140px, 1fr) minmax(280px, 2fr) minmax(130px, 160px) minmax(110px, 130px);
+      grid-template-columns: minmax(140px, 1fr) minmax(280px, 2fr) repeat(4, minmax(120px, 1fr));
     }
 
     .inbound-fields {

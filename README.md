@@ -37,10 +37,10 @@ The worker only evaluates matched clients that are active on at least one inboun
 
 The worker evaluates quota from the panel `inbounds/list` response only. This keeps a normal run to one list request per physical panel, plus update/verification requests only for clients that must be disabled.
 
-A matched client is disabled when any quota check is true:
+A matched client is disabled when any quota check is true. If multiple configured inbounds belong to the same physical panel, their shared client traffic row is counted once for quota evaluation, but the disable update is still sent for every configured inbound attachment.
 
-- any inbound total is nonzero and current `up + down >= total`, falling back to `allTime >= total` when current usage is unavailable
-- all inbound totals are nonzero and normalized combined usage is at or over the highest quota
+- any panel total is nonzero and current `up + down >= total`, falling back to `allTime >= total` when current usage is unavailable
+- all panel totals are nonzero and normalized combined usage is at or over the highest quota
 
 For the panel-stat fallback combined check, the worker scales lower-quota panels up into the highest-quota panel's units:
 
@@ -183,6 +183,9 @@ Panel fields:
 - `Add Client URL`, ending with `/api/inbounds/addClient`
 - `Cookie`
 - `API Route`, either `direct` or `xray`
+- `Total GB Ratio`
+- `Quota Divisor`
+- `XTLS Vision Flow`, off by default
 - `Enabled`
 
 Inbound fields:
@@ -191,9 +194,6 @@ Inbound fields:
 - `Inbound ID`
 - optional `Name`
 - optional `Subscription Base URL`, `Subscription Name`, and `Subscription Route`
-- `Total GB Ratio`
-- `Quota Divisor`
-- `XTLS Vision Flow`, off by default
 - `Enabled`
 
 Open the create-client page:
@@ -208,23 +208,23 @@ Open the created-clients page:
 https://your-domain.com/clients
 ```
 
-The page creates the same client on every enabled configured inbound. A panel with `API Route=xray` sends panel API requests through the Xray outbound. A panel with `API Route=direct` sends panel API requests directly.
+The page creates one shared client per physical 3x-ui panel and attaches that client to every enabled configured inbound on that panel. A panel with `API Route=xray` sends panel API requests through the Xray outbound. A panel with `API Route=direct` sends panel API requests directly.
 
-The form matches the 3x-ui add-client modal fields: Enabled, Email, ID, Subscription, Comment, Total Flow, Start After First Use, and Duration. The API payload still includes `tgId: ""` because 3x-ui expects that key even when Telegram ID is not shown in the modal.
+The form matches the 3x-ui add-client modal fields: Enabled, Email, ID, Subscription, Comment, Total Flow, Start After First Use, and Duration. The API payload still includes `tgId: 0` because 3x-ui expects that key even when Telegram ID is not shown in the modal.
 
-When an inbound has `XTLS Vision Flow` enabled in `/settings`, client creation sends `flow: "xtls-rprx-vision"` for that inbound. Inbounds without the toggle keep `flow: ""`.
+When a panel has `XTLS Vision Flow` enabled in `/settings`, client creation sends `flow: "xtls-rprx-vision"` for the shared client. 3x-ui applies that flow only where the inbound protocol/transport supports it.
 
-If multiple configured inbounds use the same panel URL, the create-client request adds a numeric suffix to the email for that shared panel database. For example, `client@example.com` becomes `client@example.com-1` and `client@example.com-2` for two matching panel URLs. The subscription ID stays the same across inbounds.
+If multiple configured inbounds use the same panel URL, the create-client request sends one `/api/clients/add` call with all of those inbound IDs. It does not create `-1`/`-2` suffix clients.
 
-`Total Flow` is the base quota from the form. Each inbound divides it by its own ratio:
+`Total Flow` is the base quota from the form. Each panel divides it by its own ratio:
 
 ```text
-first inbound ratio = 1
-second inbound ratio = 2
-third inbound ratio = 1
+first panel ratio = 1
+second panel ratio = 2
+third panel ratio = 1
 ```
 
-With those values, entering `5` in `Total Flow` sends `5 GiB` to the first inbound, `2.5 GiB` to the second inbound, and `5 GiB` to the third inbound. `0` still means unlimited for every inbound.
+With those values, entering `5` in `Total Flow` sends `5 GiB` to the first panel, `2.5 GiB` to the second panel, and `5 GiB` to the third panel. `0` still means unlimited for every panel.
 
 `Quota Divisor` applies the same quota normalization rule to panel-stat views and the quota worker's panel-stat fallback. Use `2` when a panel reports a `20 GiB` quota for two returned configs but the effective limit should be `10 GiB`. Uploaded/downloaded usage stays raw; only total quota is divided.
 
@@ -238,7 +238,7 @@ It also shows a QR code plus links for the info page, forced base64 output, and 
 
 Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before exposing create/client pages outside localhost. Those pages use HTTP Basic Auth when both values are configured.
 
-The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every enabled configured inbound, supports live filtering by email or subscription ID, and displays panel-reported usage normalized with the same quota divisor, total ratio, and combined scaling rules used by `/sub/:token`. The top summary also calls each physical panel's `onlines` endpoint once and shows per-panel online, active/total, and inactive/total counts across that panel's configured inbounds. Use `/clients?usage=subscription` only when you need to wait for upstream `Subscription-Userinfo` headers for every client before rendering; opening a client's details still loads authoritative subscription-header usage for that client. Its edit form can enable or disable the client, add base traffic using each inbound's `Total GB Ratio`, set an expiry date, or clear expiry while preserving all other client fields.
+The `/clients` page reads each configured panel's `inbounds/list` endpoint, shows only clients whose `subId` exists in every enabled configured inbound, supports live filtering by email or subscription ID, and displays panel-reported usage normalized with the same quota divisor, total ratio, and combined scaling rules used by `/sub/:token`. Same-panel inbounds share one traffic row, so their usage is counted once. The top summary also calls each physical panel's `onlines` endpoint once and shows per-panel online, active/total, and inactive/total counts across that panel's configured inbounds. Use `/clients?usage=subscription` only when you need to wait for upstream `Subscription-Userinfo` headers for every client before rendering; opening a client's details still loads authoritative subscription-header usage for that client. Its edit form can enable or disable the client, add base traffic using each panel's `Total GB Ratio`, set an expiry date, or clear expiry while preserving all other client fields.
 
 Panel mutations run Xray-routed panels before direct panels. Each Xray mutation gets the initial attempt plus three retries; if an Xray mutation still fails, later panel mutations are skipped so direct panels are not updated alone.
 

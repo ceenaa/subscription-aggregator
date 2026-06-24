@@ -69,9 +69,7 @@ export function normalizeQuotaUsage(usage, options = {}) {
 }
 
 export function usageFromResult(result) {
-  return normalizeQuotaUsage(parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']), {
-    quotaDivisor: result.count
-  });
+  return normalizeQuotaUsage(parseSubscriptionUserInfo(result.headers?.['subscription-userinfo']));
 }
 
 function baseRatioUsageFromResult(result) {
@@ -93,6 +91,60 @@ function baseRatioUsageFromResult(result) {
     remaining: total > 0 ? Math.max(total - used, 0) : 0,
     totalGbRatio: 1
   };
+}
+
+function hasUsageGroupKey(value) {
+  return value !== undefined && value !== null && String(value) !== '';
+}
+
+function defaultResultUsageGroupKey(result) {
+  const panelDbId = result?.source?.panelDbId ?? result?.panelDbId;
+  return hasUsageGroupKey(panelDbId) ? `panel:${panelDbId}` : '';
+}
+
+function preferredUsageEntry(first, second, normalizer) {
+  const firstUsage = normalizer(first);
+  const secondUsage = normalizer(second);
+  const firstHasData = firstUsage.hasData !== false;
+  const secondHasData = secondUsage.hasData !== false;
+
+  if (!firstHasData && secondHasData) return second;
+  if (firstHasData && !secondHasData) return first;
+  if (secondUsage.total > firstUsage.total) return second;
+  if (secondUsage.total === firstUsage.total && secondUsage.used > firstUsage.used) return second;
+  return first;
+}
+
+export function deduplicateUsageEntries(entries, groupKeyForEntry, options = {}) {
+  if (typeof groupKeyForEntry !== 'function') return entries;
+
+  const normalizer = options.normalizer || normalizeQuotaUsage;
+  const deduplicated = [];
+  const indexesByKey = new Map();
+
+  for (const entry of entries) {
+    const key = groupKeyForEntry(entry);
+    if (!hasUsageGroupKey(key)) {
+      deduplicated.push(entry);
+      continue;
+    }
+
+    const stringKey = String(key);
+    const existingIndex = indexesByKey.get(stringKey);
+    if (existingIndex === undefined) {
+      indexesByKey.set(stringKey, deduplicated.length);
+      deduplicated.push(entry);
+      continue;
+    }
+
+    deduplicated[existingIndex] = preferredUsageEntry(
+      deduplicated[existingIndex],
+      entry,
+      normalizer
+    );
+  }
+
+  return deduplicated;
 }
 
 export function summarizeUsage(results) {
@@ -155,8 +207,12 @@ export function normalizeCombinedUsage(entries) {
   };
 }
 
-export function summarizeNormalizedUsage(results) {
-  const usages = results.map(baseRatioUsageFromResult);
+export function summarizeNormalizedUsage(results, options = {}) {
+  const groupKeyForResult = options.groupKeyForResult || defaultResultUsageGroupKey;
+  const usageResults = deduplicateUsageEntries(results, groupKeyForResult, {
+    normalizer: baseRatioUsageFromResult
+  });
+  const usages = usageResults.map(baseRatioUsageFromResult);
   if (usages.length === 0 || usages.some((usage) => !usage.hasData)) {
     return {
       upload: 0,

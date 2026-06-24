@@ -62,6 +62,9 @@ function ensureDatabase(db) {
       add_client_url TEXT NOT NULL DEFAULT '',
       cookie TEXT NOT NULL DEFAULT '',
       proxy TEXT NOT NULL DEFAULT 'direct',
+      total_gb_ratio REAL NOT NULL DEFAULT 1,
+      quota_divisor REAL NOT NULL DEFAULT 1,
+      xtls_vision_flow INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -87,7 +90,11 @@ function ensureDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_inbounds_panel_id ON inbounds(panel_id);
     CREATE INDEX IF NOT EXISTS idx_inbounds_enabled ON inbounds(enabled);
   `);
+  ensureColumn(db, 'panels', 'total_gb_ratio', 'total_gb_ratio REAL NOT NULL DEFAULT 1');
+  ensureColumn(db, 'panels', 'quota_divisor', 'quota_divisor REAL NOT NULL DEFAULT 1');
+  ensureColumn(db, 'panels', 'xtls_vision_flow', 'xtls_vision_flow INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'inbounds', 'xtls_vision_flow', 'xtls_vision_flow INTEGER NOT NULL DEFAULT 0');
+  migratePanelClientSettings(db);
 }
 
 function tableColumns(db, table) {
@@ -109,6 +116,45 @@ function setMeta(db, key, value) {
     VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);
+}
+
+function migratePanelClientSettings(db) {
+  if (getMeta(db, 'panel_client_settings_migrated') === '1') return;
+
+  db.exec(`
+    UPDATE panels
+    SET total_gb_ratio = COALESCE((
+      SELECT inbounds.total_gb_ratio
+      FROM inbounds
+      WHERE inbounds.panel_id = panels.id
+      ORDER BY inbounds.sort_order ASC, inbounds.id ASC
+      LIMIT 1
+    ), total_gb_ratio)
+    WHERE total_gb_ratio = 1
+      AND EXISTS (SELECT 1 FROM inbounds WHERE inbounds.panel_id = panels.id);
+
+    UPDATE panels
+    SET quota_divisor = COALESCE((
+      SELECT inbounds.quota_divisor
+      FROM inbounds
+      WHERE inbounds.panel_id = panels.id
+      ORDER BY inbounds.sort_order ASC, inbounds.id ASC
+      LIMIT 1
+    ), quota_divisor)
+    WHERE quota_divisor = 1
+      AND EXISTS (SELECT 1 FROM inbounds WHERE inbounds.panel_id = panels.id);
+
+    UPDATE panels
+    SET xtls_vision_flow = 1
+    WHERE xtls_vision_flow = 0
+      AND EXISTS (
+        SELECT 1
+        FROM inbounds
+        WHERE inbounds.panel_id = panels.id
+          AND inbounds.xtls_vision_flow = 1
+      );
+  `);
+  setMeta(db, 'panel_client_settings_migrated', '1');
 }
 
 function rowCount(db, table) {
@@ -210,13 +256,23 @@ function seedLegacyConfiguration(db, env) {
 
     if (!panelId) {
       const result = db.prepare(`
-        INSERT INTO panels (name, add_client_url, cookie, proxy, enabled)
-        VALUES (?, ?, ?, ?, 1)
+        INSERT INTO panels (
+          name,
+          add_client_url,
+          cookie,
+          proxy,
+          total_gb_ratio,
+          quota_divisor,
+          enabled
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 1)
       `).run(
         legacyPanel.name,
         legacyPanel.addClientUrl,
         legacyPanel.cookie,
-        legacyPanel.proxy
+        legacyPanel.proxy,
+        legacyPanel.totalGbRatio,
+        legacyPanel.quotaDivisor
       );
       panelId = Number(result.lastInsertRowid);
       panelIdsByKey.set(key, panelId);
@@ -285,10 +341,10 @@ function configuredInboundRows(db) {
       panels.add_client_url AS addClientUrl,
       panels.cookie AS cookie,
       panels.proxy AS proxy,
+      panels.total_gb_ratio AS totalGbRatio,
+      panels.quota_divisor AS quotaDivisor,
+      panels.xtls_vision_flow AS xtlsVisionFlow,
       inbounds.inbound_id AS inboundId,
-      inbounds.total_gb_ratio AS totalGbRatio,
-      inbounds.quota_divisor AS quotaDivisor,
-      inbounds.xtls_vision_flow AS xtlsVisionFlow,
       inbounds.subscription_name AS subscriptionName,
       inbounds.subscription_base_url AS subscriptionBaseUrl,
       inbounds.subscription_proxy AS subscriptionProxy
@@ -386,6 +442,9 @@ function normalizePanelInput(input) {
     }),
     cookie: optionalText(input.cookie),
     proxy: normalizeProxy(input.proxy, 'direct'),
+    totalGbRatio: readPositiveNumber(input.totalGbRatio, 'total GB ratio', 1),
+    quotaDivisor: readPositiveNumber(input.quotaDivisor, 'quota divisor', 1),
+    xtlsVisionFlow: input.xtlsVisionFlow ? 1 : 0,
     enabled: input.enabled ? 1 : 0
   };
 }
@@ -399,9 +458,6 @@ function normalizeInboundInput(input) {
     subscriptionName: optionalText(input.subscriptionName),
     subscriptionBaseUrl: validateUrl(input.subscriptionBaseUrl, 'subscription base URL'),
     subscriptionProxy,
-    totalGbRatio: readPositiveNumber(input.totalGbRatio, 'total GB ratio', 1),
-    quotaDivisor: readPositiveNumber(input.quotaDivisor, 'quota divisor', 1),
-    xtlsVisionFlow: input.xtlsVisionFlow ? 1 : 0,
     enabled: input.enabled ? 1 : 0
   };
 }
@@ -432,9 +488,27 @@ export function createPanel(databasePath, input) {
   const panel = normalizePanelInput(input);
   return withDatabase(databasePath, (db) => {
     const result = db.prepare(`
-      INSERT INTO panels (name, add_client_url, cookie, proxy, enabled)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(panel.name, panel.addClientUrl, panel.cookie, panel.proxy, panel.enabled);
+      INSERT INTO panels (
+        name,
+        add_client_url,
+        cookie,
+        proxy,
+        total_gb_ratio,
+        quota_divisor,
+        xtls_vision_flow,
+        enabled
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      panel.name,
+      panel.addClientUrl,
+      panel.cookie,
+      panel.proxy,
+      panel.totalGbRatio,
+      panel.quotaDivisor,
+      panel.xtlsVisionFlow,
+      panel.enabled
+    );
     return Number(result.lastInsertRowid);
   });
 }
@@ -450,10 +524,23 @@ export function updatePanel(databasePath, id, input) {
         add_client_url = ?,
         cookie = ?,
         proxy = ?,
+        total_gb_ratio = ?,
+        quota_divisor = ?,
+        xtls_vision_flow = ?,
         enabled = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(panel.name, panel.addClientUrl, panel.cookie, panel.proxy, panel.enabled, panelId);
+    `).run(
+      panel.name,
+      panel.addClientUrl,
+      panel.cookie,
+      panel.proxy,
+      panel.totalGbRatio,
+      panel.quotaDivisor,
+      panel.xtlsVisionFlow,
+      panel.enabled,
+      panelId
+    );
     if (result.changes === 0) throw new Error('panel not found');
   });
 }
@@ -478,13 +565,10 @@ export function createInbound(databasePath, input) {
         subscription_name,
         subscription_base_url,
         subscription_proxy,
-        total_gb_ratio,
-        quota_divisor,
-        xtls_vision_flow,
         enabled,
         sort_order
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       inbound.panelId,
       inbound.name,
@@ -492,9 +576,6 @@ export function createInbound(databasePath, input) {
       inbound.subscriptionName,
       inbound.subscriptionBaseUrl,
       inbound.subscriptionProxy,
-      inbound.totalGbRatio,
-      inbound.quotaDivisor,
-      inbound.xtlsVisionFlow,
       inbound.enabled,
       Number(maxOrder) + 1
     );
@@ -515,9 +596,6 @@ export function updateInbound(databasePath, id, input) {
         subscription_name = ?,
         subscription_base_url = ?,
         subscription_proxy = ?,
-        total_gb_ratio = ?,
-        quota_divisor = ?,
-        xtls_vision_flow = ?,
         enabled = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -528,9 +606,6 @@ export function updateInbound(databasePath, id, input) {
       inbound.subscriptionName,
       inbound.subscriptionBaseUrl,
       inbound.subscriptionProxy,
-      inbound.totalGbRatio,
-      inbound.quotaDivisor,
-      inbound.xtlsVisionFlow,
       inbound.enabled,
       inboundDbId
     );

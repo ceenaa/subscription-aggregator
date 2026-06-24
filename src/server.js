@@ -191,6 +191,9 @@ function panelValuesFromBody(body) {
     addClientUrl: params.get('addClientUrl') || '',
     cookie: params.get('cookie') || '',
     proxy: params.get('proxy') || '',
+    totalGbRatio: params.get('totalGbRatio') || '',
+    quotaDivisor: params.get('quotaDivisor') || '',
+    xtlsVisionFlow: params.get('xtlsVisionFlow') === 'true',
     enabled: params.get('enabled') === 'true'
   };
 }
@@ -204,9 +207,6 @@ function inboundValuesFromBody(body) {
     subscriptionName: params.get('subscriptionName') || '',
     subscriptionBaseUrl: params.get('subscriptionBaseUrl') || '',
     subscriptionProxy: params.get('subscriptionProxy') || '',
-    totalGbRatio: params.get('totalGbRatio') || '',
-    quotaDivisor: params.get('quotaDivisor') || '',
-    xtlsVisionFlow: params.get('xtlsVisionFlow') === 'true',
     enabled: params.get('enabled') === 'true'
   };
 }

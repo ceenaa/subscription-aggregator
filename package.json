@@ -13,6 +13,6 @@
     "print:plain": "node src/cli.js --plain",
     "worker:quota": "node src/quota-worker.js",
     "worker:quota:dry-run": "node src/quota-worker.js --dry-run",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   }
 }

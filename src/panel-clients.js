@@ -9,6 +9,7 @@ import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 import { aggregateSubscriptions } from './subscription.js';
 import { sourcesForToken } from './source-url.js';
 import {
+  deduplicateUsageEntries,
   formatExpiry,
   normalizeCombinedUsage,
   normalizeQuotaUsage,
@@ -371,7 +372,11 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
 
   const clients = await mapLimit(groups, concurrency, async ({ subId, entries }) => {
     const currentEntries = entries.map(currentUsageEntry);
-    let usage = normalizeCombinedUsage(currentEntries);
+    const usageEntries = deduplicateUsageEntries(
+      currentEntries,
+      (entry) => panelGroupKey(entry.panel)
+    );
+    let usage = normalizeCombinedUsage(usageEntries);
     let sources = [];
     let usageError = '';
 

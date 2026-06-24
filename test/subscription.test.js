@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -49,6 +50,8 @@ import {
   evaluateQuotaPair,
   indexInboundClients
 } from '../src/quota-worker.js';
+
+const require = createRequire(import.meta.url);
 
 function baseEnv(overrides = {}) {
   return {
@@ -479,7 +482,7 @@ test('applies panel total flow ratios as divisors to addClient requests', () => 
   assert.equal(second.settings.clients[0].totalGB, 2.5 * 1024 ** 3);
 });
 
-test('applies an inbound XTLS vision flow to addClient requests', () => {
+test('applies a panel XTLS vision flow to addClient requests', () => {
   const request = buildAddClientRequest(
     {
       name: 'vision-inbound',
@@ -945,13 +948,13 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.equal(result.clients[0].subId, 'shared-sub');
   assert.equal(result.clients[0].status, 'Active');
   assert.equal(result.clients[0].enabledPanels, 2);
-  assert.equal(result.clients[0].usage.total, 10 * gib);
-  assert.equal(result.clients[0].usage.used, 3 * gib);
-  assert.equal(result.clients[0].usage.remaining, 7 * gib);
+  assert.equal(result.clients[0].usage.total, 20 * gib);
+  assert.equal(result.clients[0].usage.used, 4 * gib);
+  assert.equal(result.clients[0].usage.remaining, 16 * gib);
   assert.equal(result.clients[0].sources.length, 2);
   assert.equal(result.clients[0].sources[0].source, 'wcloud');
   assert.equal(result.clients[0].sources[0].links, 2);
-  assert.equal(result.clients[0].sources[0].total, 10 * gib);
+  assert.equal(result.clients[0].sources[0].total, 20 * gib);
   assert.equal(result.clients[0].sources[0].used, 2 * gib);
   assert.equal(result.clients[0].panels[0].total, 10 * gib);
   assert.equal(result.clients[0].panels[0].used, 8 * gib);
@@ -980,7 +983,7 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.match(html, /data-client-search="shared shared-sub"/);
   assert.match(html, /\/assets\/clients\.js/);
   assert.match(html, /shared-sub/);
-  assert.match(html, /3\.00 GB/);
+  assert.match(html, /4\.00 GB/);
   assert.match(html, /panel-summary-card/);
   assert.match(html, /online-pill/);
   assert.match(html, />Online<\/span>\s*<b>2<\/b>/);
@@ -1103,6 +1106,86 @@ test('summarizes multiple inbounds from the same panel once', async () => {
   assert.match(html, />Inactive<\/span>\s*<strong>1\/3<\/strong>/);
   assert.doesNotMatch(html, /<strong>1x<\/strong>/);
   assert.doesNotMatch(html, /<strong>2x<\/strong>/);
+});
+
+test('counts shared same-panel client usage once on the clients page', async () => {
+  const gib = 1024 ** 3;
+  const firstInboundPanel = {
+    name: '1x',
+    panelName: 'cdn-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    inboundId: '6',
+    proxy: 'xray',
+    quotaDivisor: 1
+  };
+  const secondInboundPanel = {
+    name: '2x',
+    panelName: 'cdn-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'xray',
+    quotaDivisor: 1
+  };
+  const sharedClient = {
+    email: 'shared',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const firstInbound = {
+    id: 6,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [
+      { email: 'shared', subId: 'shared-sub', enable: true, total: 10 * gib, allTime: 6 * gib }
+    ]
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [
+      { email: 'shared', subId: 'shared-sub', enable: true, total: 10 * gib, allTime: 6 * gib }
+    ]
+  };
+  const runtime = {
+    async request(target) {
+      if (target.url.endsWith('/onlines')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: ['shared'] })
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, obj: [firstInbound, secondInbound] })
+      };
+    }
+  };
+
+  const result = await listCreatedPanelClients(runtime, [firstInboundPanel, secondInboundPanel], {
+    includeSubscriptionUsage: false
+  });
+  const html = renderClientsPage({
+    panels: result.panels,
+    clients: result.clients.map((client) => ({
+      ...client,
+      subscriptionUrl: `https://subscriptions.example/sub/${client.subId}`
+    })),
+    updatedAt: new Date('2026-06-15T10:00:00Z')
+  });
+
+  assert.equal(result.clients.length, 1);
+  assert.equal(result.clients[0].enabledPanels, 2);
+  assert.equal(result.clients[0].totalPanels, 2);
+  assert.equal(result.clients[0].usage.total, 10 * gib);
+  assert.equal(result.clients[0].usage.used, 6 * gib);
+  assert.equal(result.clients[0].usage.remaining, 4 * gib);
+  assert.match(html, /6\.00 GB/);
+  assert.doesNotMatch(html, /12\.00 GB/);
 });
 
 test('updates created clients while preserving untouched client fields', async () => {
@@ -1516,6 +1599,67 @@ test('quota worker reuses one list response for shared physical panel inbounds',
   assert.equal(result.checked, 1);
   assert.equal(result.disabled.length, 1);
   assert.equal(requests.filter((request) => request.target.url.endsWith('/list')).length, 1);
+});
+
+test('quota worker counts shared same-panel client usage once before enforcing', async () => {
+  const gib = 1024 ** 3;
+  const basePanel = {
+    addClientUrl: 'https://shared-panel.example/secret/panel/api/inbounds/addClient',
+    cookie: 'session=shared',
+    proxy: 'direct'
+  };
+  const firstPanel = {
+    ...basePanel,
+    name: 'shared first',
+    inboundId: '4'
+  };
+  const secondPanel = {
+    ...basePanel,
+    name: 'shared second',
+    inboundId: '5'
+  };
+  const sharedClient = {
+    id: '11111111-1111-4111-8111-111111111111',
+    email: 'shared',
+    subId: 'shared-sub',
+    enable: true,
+    totalGB: 10 * gib
+  };
+  const firstInbound = {
+    id: 4,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [
+      { email: 'shared', subId: 'shared-sub', enable: true, total: 10 * gib, allTime: 6 * gib }
+    ]
+  };
+  const secondInbound = {
+    id: 5,
+    settings: JSON.stringify({ clients: [sharedClient] }),
+    clientStats: [
+      { email: 'shared', subId: 'shared-sub', enable: true, total: 10 * gib, allTime: 6 * gib }
+    ]
+  };
+  const requests = [];
+  const runtime = {
+    async request(target, options) {
+      requests.push({ target, options });
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, obj: [firstInbound, secondInbound] })
+      };
+    }
+  };
+
+  const result = await enforcePanelQuota(runtime, [firstPanel, secondPanel], {
+    logger: { log() {} }
+  });
+
+  assert.equal(result.checked, 1);
+  assert.equal(result.disabled.length, 0);
+  assert.equal(result.partialDisabled.length, 0);
+  assert.equal(requests.filter((request) => request.target.url.endsWith('/list')).length, 1);
+  assert.equal(requests.filter((request) => request.options.method === 'POST').length, 0);
 });
 
 test('quota worker ignores subscription sources and uses panel stats', async () => {
@@ -2167,7 +2311,7 @@ test('renders the inbound form with 3x-ui visible fields', () => {
   assert.doesNotMatch(html, /IP limit/);
 });
 
-test('renders the settings inbound XTLS vision flow toggle', () => {
+test('renders the settings panel client controls', () => {
   const html = renderSettingsPage({
     databasePath: '/tmp/config.sqlite3',
     panels: [
@@ -2177,6 +2321,9 @@ test('renders the settings inbound XTLS vision flow toggle', () => {
         add_client_url: 'https://panel.example/secret/panel/api/inbounds/addClient',
         cookie: '',
         proxy: 'direct',
+        total_gb_ratio: 1.5,
+        quota_divisor: 2,
+        xtls_vision_flow: 1,
         enabled: 1,
         inboundCount: 1
       }
@@ -2188,19 +2335,20 @@ test('renders the settings inbound XTLS vision flow toggle', () => {
         panelName: 'panel',
         name: 'vision',
         inbound_id: '4',
-        total_gb_ratio: 1,
-        quota_divisor: 1,
         subscription_name: '',
         subscription_base_url: '',
         subscription_proxy: '',
-        xtls_vision_flow: 1,
         enabled: 1
       }
     ]
   });
 
+  assert.match(html, /Total GB Ratio/);
+  assert.match(html, /Quota Divisor/);
   assert.match(html, /XTLS Vision Flow/);
   assert.match(html, /name="xtlsVisionFlow"/);
+  assert.match(html, /ratio 1\.5/);
+  assert.match(html, /divisor 2/);
   assert.match(html, /XTLS vision flow/);
 });
 
@@ -2265,6 +2413,9 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
     addClientUrl: 'https://edge-panel.example/secret/panel/api/inbounds/addClient',
     cookie: '3x-ui=edge',
     proxy: 'xray',
+    totalGbRatio: '1.5',
+    quotaDivisor: '2',
+    xtlsVisionFlow: true,
     enabled: true
   });
   const secondPanelId = createPanel(databasePath, {
@@ -2272,6 +2423,8 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
     addClientUrl: 'https://core-panel.example/secret/panel/api/inbounds/addClient',
     cookie: '3x-ui=core',
     proxy: 'direct',
+    totalGbRatio: '3',
+    quotaDivisor: '4',
     enabled: true
   });
 
@@ -2282,9 +2435,6 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
     subscriptionName: 'edge 443',
     subscriptionBaseUrl: 'https://edge-provider.example/sub',
     subscriptionProxy: '',
-    totalGbRatio: '1.5',
-    quotaDivisor: '2',
-    xtlsVisionFlow: true,
     enabled: true
   });
   const disabledInboundId = createInbound(databasePath, {
@@ -2294,8 +2444,6 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
     subscriptionName: 'edge 8443',
     subscriptionBaseUrl: 'https://edge-provider-alt.example/sub',
     subscriptionProxy: 'direct',
-    totalGbRatio: '2',
-    quotaDivisor: '1',
     enabled: true
   });
   createInbound(databasePath, {
@@ -2305,8 +2453,6 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
     subscriptionName: 'core 443',
     subscriptionBaseUrl: 'https://core-provider.example/sub',
     subscriptionProxy: '',
-    totalGbRatio: '3',
-    quotaDivisor: '4',
     enabled: true
   });
 
@@ -2342,9 +2488,9 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
         panelName: 'edge-panel',
         inboundId: '5',
         proxy: 'xray',
-        totalGbRatio: 2,
-        quotaDivisor: 1,
-        clientFlow: ''
+        totalGbRatio: 1.5,
+        quotaDivisor: 2,
+        clientFlow: 'xtls-rprx-vision'
       },
       {
         name: 'core-443',
@@ -2375,7 +2521,7 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
         name: 'edge 8443',
         baseUrl: 'https://edge-provider-alt.example/sub',
         proxy: 'direct',
-        totalGbRatio: 2
+        totalGbRatio: 1.5
       },
       {
         name: 'core 443',
@@ -2389,7 +2535,9 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   const settings = loadSettingsData(databasePath);
   assert.equal(settings.panels.length, 2);
   assert.equal(settings.inbounds.length, 3);
-  assert.equal(settings.inbounds[0].xtls_vision_flow, 1);
+  assert.equal(settings.panels[0].total_gb_ratio, 1.5);
+  assert.equal(settings.panels[0].quota_divisor, 2);
+  assert.equal(settings.panels[0].xtls_vision_flow, 1);
 
   updateInbound(databasePath, disabledInboundId, {
     panelId: firstPanelId,
@@ -2398,8 +2546,6 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
     subscriptionName: 'edge 8443',
     subscriptionBaseUrl: 'https://edge-provider-alt.example/sub',
     subscriptionProxy: 'direct',
-    totalGbRatio: '2',
-    quotaDivisor: '1',
     enabled: false
   });
   refreshConfiguredTargets(config);
@@ -2408,35 +2554,130 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   assert.deepEqual(config.sources.map((source) => source.name), ['edge 443', 'core 443']);
 });
 
-test('merges sqlite subscription sources with non-duplicate env sources', () => {
+test('migrates legacy inbound client settings to panel settings', () => {
   const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
   const panelId = createPanel(databasePath, {
+    name: 'legacy-panel',
+    addClientUrl: 'https://legacy-panel.example/secret/panel/api/inbounds/addClient',
+    proxy: 'direct',
+    enabled: true
+  });
+  const firstInboundId = createInbound(databasePath, {
+    panelId,
+    name: 'legacy-443',
+    inboundId: '4',
+    subscriptionName: 'legacy 443',
+    subscriptionBaseUrl: 'https://legacy-provider.example/sub',
+    subscriptionProxy: '',
+    enabled: true
+  });
+  const secondInboundId = createInbound(databasePath, {
+    panelId,
+    name: 'legacy-8443',
+    inboundId: '5',
+    subscriptionName: 'legacy 8443',
+    subscriptionBaseUrl: 'https://legacy-provider-alt.example/sub',
+    subscriptionProxy: '',
+    enabled: true
+  });
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.prepare(`
+      UPDATE panels
+      SET total_gb_ratio = 1,
+          quota_divisor = 1,
+          xtls_vision_flow = 0
+      WHERE id = ?
+    `).run(panelId);
+    db.prepare(`
+      UPDATE inbounds
+      SET total_gb_ratio = 2,
+          quota_divisor = 3,
+          xtls_vision_flow = 0
+      WHERE id = ?
+    `).run(firstInboundId);
+    db.prepare(`
+      UPDATE inbounds
+      SET total_gb_ratio = 4,
+          quota_divisor = 5,
+          xtls_vision_flow = 1
+      WHERE id = ?
+    `).run(secondInboundId);
+    db.prepare("DELETE FROM app_meta WHERE key = 'panel_client_settings_migrated'").run();
+  } finally {
+    db.close();
+  }
+
+  const config = loadConfig(
+    baseEnv({
+      SQLITE_DB_PATH: databasePath,
+      FIRST_SUBSCRIPTION_BASE_URL: '',
+      SECOND_SUBSCRIPTION_BASE_URL: ''
+    })
+  );
+  const settings = loadSettingsData(databasePath);
+
+  assert.equal(settings.panels[0].total_gb_ratio, 2);
+  assert.equal(settings.panels[0].quota_divisor, 3);
+  assert.equal(settings.panels[0].xtls_vision_flow, 1);
+  assert.deepEqual(
+    config.panels.map((panel) => ({
+      name: panel.name,
+      totalGbRatio: panel.totalGbRatio,
+      quotaDivisor: panel.quotaDivisor,
+      clientFlow: panel.clientFlow
+    })),
+    [
+      {
+        name: 'legacy-443',
+        totalGbRatio: 2,
+        quotaDivisor: 3,
+        clientFlow: 'xtls-rprx-vision'
+      },
+      {
+        name: 'legacy-8443',
+        totalGbRatio: 2,
+        quotaDivisor: 3,
+        clientFlow: 'xtls-rprx-vision'
+      }
+    ]
+  );
+});
+
+test('merges sqlite subscription sources with non-duplicate env sources', () => {
+  const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
+  const firstPanelId = createPanel(databasePath, {
     name: 'source-panel',
     addClientUrl: 'https://source-panel.example/secret/panel/api/inbounds/addClient',
     proxy: 'direct',
+    totalGbRatio: '1',
+    enabled: true
+  });
+  const extraPanelId = createPanel(databasePath, {
+    name: 'source-extra-panel',
+    addClientUrl: 'https://source-extra-panel.example/secret/panel/api/inbounds/addClient',
+    proxy: 'direct',
+    totalGbRatio: '0.5',
     enabled: true
   });
 
   createInbound(databasePath, {
-    panelId,
+    panelId: firstPanelId,
     name: 'db-first',
     inboundId: '1',
     subscriptionName: 'db first',
     subscriptionBaseUrl: 'https://first-provider.example/sub',
     subscriptionProxy: 'xray',
-    totalGbRatio: '1',
-    quotaDivisor: '1',
     enabled: true
   });
   createInbound(databasePath, {
-    panelId,
+    panelId: extraPanelId,
     name: 'db-extra',
     inboundId: '2',
     subscriptionName: 'db extra',
     subscriptionBaseUrl: 'https://db-extra.example/sub',
     subscriptionProxy: 'direct',
-    totalGbRatio: '0.5',
-    quotaDivisor: '1',
     enabled: true
   });
 
@@ -2553,7 +2794,7 @@ test('parses subscription usage headers', () => {
   assert.equal(formatBytes(usage.remaining), '4.00 KB');
 });
 
-test('normalizes only the quota when one panel returns multiple links', () => {
+test('does not divide quota by link count when one panel returns multiple links', () => {
   const usage = usageFromResult({
     count: 2,
     headers: {
@@ -2589,20 +2830,47 @@ test('normalizes only the quota when one panel returns multiple links', () => {
     }
   ]);
 
+  // subscription-userinfo reports total quota for the client, not per-link quota.
+  // count (number of links returned) must not divide the quota or usage.
   assert.equal(usage.upload, 2048);
   assert.equal(usage.download, 2048);
   assert.equal(usage.used, 4096);
-  assert.equal(usage.total, 8192);
-  assert.equal(usage.remaining, 4096);
+  assert.equal(usage.total, 16384);
+  assert.equal(usage.remaining, 12288);
   assert.equal(summary.upload, 3072);
   assert.equal(summary.download, 3072);
   assert.equal(summary.used, 6144);
-  assert.equal(summary.total, 16384);
-  assert.equal(summary.remaining, 10240);
+  assert.equal(summary.total, 24576);
+  assert.equal(summary.remaining, 18432);
   assert.equal(normalizedSummary.hasData, true);
-  assert.equal(normalizedSummary.used, 6144);
-  assert.equal(normalizedSummary.total, 8192);
-  assert.equal(normalizedSummary.remaining, 2048);
+  assert.equal(normalizedSummary.used, 8192);
+  assert.equal(normalizedSummary.total, 16384);
+  assert.equal(normalizedSummary.remaining, 8192);
+});
+
+test('counts same-panel subscription usage once when one client has multiple inbound links', () => {
+  const gib = 1024 ** 3;
+  const normalizedSummary = summarizeNormalizedUsage([
+    {
+      count: 1,
+      source: { name: 'cdn 443', panelDbId: 10, totalGbRatio: 1 },
+      headers: {
+        'subscription-userinfo': `upload=${2 * gib}; download=${4 * gib}; total=${10 * gib}; expire=0`
+      }
+    },
+    {
+      count: 1,
+      source: { name: 'cdn 8443', panelDbId: 10, totalGbRatio: 1 },
+      headers: {
+        'subscription-userinfo': `upload=${2 * gib}; download=${4 * gib}; total=${10 * gib}; expire=0`
+      }
+    }
+  ]);
+
+  assert.equal(normalizedSummary.hasData, true);
+  assert.equal(normalizedSummary.used, 6 * gib);
+  assert.equal(normalizedSummary.total, 10 * gib);
+  assert.equal(normalizedSummary.remaining, 4 * gib);
 });
 
 test('normalizes aggregated subscription usage back to base ratio units', () => {
