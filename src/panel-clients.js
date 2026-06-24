@@ -49,6 +49,20 @@ function primaryEmail(entries) {
   return entries.find((entry) => entry.email)?.email || '';
 }
 
+function legacySuffixBase(email) {
+  return String(email || '').replace(/-\d+$/, '');
+}
+
+function displayEmail(entries) {
+  const emails = uniqueStrings(entries.map((entry) => entry.email));
+  if (emails.length <= 1) return emails[0] || '';
+
+  const bases = uniqueStrings(emails.map(legacySuffixBase));
+  if (bases.length === 1 && bases[0]) return bases[0];
+
+  return emails.join(', ');
+}
+
 function currentUsageEntry(entry) {
   if (!entry.hasCurrentUsage) return entry;
 
@@ -59,22 +73,32 @@ function currentUsageEntry(entry) {
   };
 }
 
-function panelUsage(entry) {
-  const currentEntry = currentUsageEntry(entry);
+function panelUsage(entries) {
+  const panelEntries = Array.isArray(entries) ? entries : [entries];
+  const firstEntry = panelEntries[0];
+  const usageEntries = deduplicateUsageEntries(
+    panelEntries.map(currentUsageEntry),
+    (entry) => panelGroupKey(entry.panel)
+  );
+  const currentEntry = usageEntries[0] || currentUsageEntry(firstEntry);
   const usage = normalizeQuotaUsage(currentEntry);
+  const status = statusForEntries(panelEntries);
+  const quotaDivisors = uniqueStrings(panelEntries.map((entry) => entry.quotaDivisor || 1));
+  const proxies = uniqueStrings(panelEntries.map((entry) => entry.panel.proxy));
 
   return {
-    panel: entry.panel.name,
-    proxy: entry.panel.proxy,
-    email: entry.email,
-    enabled: clientLooksEnabled(entry),
-    upload: entry.upload,
-    download: entry.download,
+    panel: firstEntry.panel.panelName || firstEntry.panel.name,
+    proxy: proxies.join(', '),
+    email: displayEmail(panelEntries),
+    status,
+    enabled: status === 'Active',
+    upload: currentEntry.upload,
+    download: currentEntry.download,
     used: usage.used,
     total: usage.total,
     remaining: usage.remaining,
-    rawTotal: entry.total,
-    quotaDivisor: entry.quotaDivisor || 1
+    rawTotal: currentEntry.total,
+    quotaDivisor: quotaDivisors.join(', ')
   };
 }
 
@@ -396,16 +420,20 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
       }
     }
 
+    const panelRows = groupByPanel(entries, (entry) => entry.panel).map((group) =>
+      panelUsage(group.items)
+    );
+
     return {
       subId,
       email: primaryEmail(entries),
       status: statusForEntries(entries),
-      enabledPanels: entries.filter(clientLooksEnabled).length,
-      totalPanels: entries.length,
+      enabledPanels: panelRows.filter((panel) => panel.status === 'Active').length,
+      totalPanels: panelRows.length,
       usage,
       usageError,
       sources,
-      panels: entries.map(panelUsage)
+      panels: panelRows
     };
   });
 

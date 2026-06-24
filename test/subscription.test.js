@@ -1179,13 +1179,80 @@ test('counts shared same-panel client usage once on the clients page', async () 
   });
 
   assert.equal(result.clients.length, 1);
-  assert.equal(result.clients[0].enabledPanels, 2);
-  assert.equal(result.clients[0].totalPanels, 2);
+  assert.equal(result.clients[0].enabledPanels, 1);
+  assert.equal(result.clients[0].totalPanels, 1);
+  assert.equal(result.clients[0].panels.length, 1);
+  assert.equal(result.clients[0].panels[0].panel, 'cdn-panel');
+  assert.equal(result.clients[0].panels[0].status, 'Active');
   assert.equal(result.clients[0].usage.total, 10 * gib);
   assert.equal(result.clients[0].usage.used, 6 * gib);
   assert.equal(result.clients[0].usage.remaining, 4 * gib);
   assert.match(html, /6\.00 GB/);
   assert.doesNotMatch(html, /12\.00 GB/);
+});
+
+test('collapses same-panel client status rows with legacy suffix emails', async () => {
+  const firstInboundPanel = {
+    name: 'aws',
+    panelName: 'edge-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://edge.example/secret/panel/api/inbounds/addClient',
+    inboundId: '6',
+    proxy: 'xray',
+    quotaDivisor: 1
+  };
+  const secondInboundPanel = {
+    name: 'cloudflare',
+    panelName: 'edge-panel',
+    panelDbId: 10,
+    addClientUrl: 'https://edge.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'xray',
+    quotaDivisor: 1
+  };
+  const firstInbound = {
+    id: 6,
+    settings: JSON.stringify({
+      clients: [{ email: 'Mobbim-1', subId: 'mobbim-sub', enable: false }]
+    }),
+    clientStats: []
+  };
+  const secondInbound = {
+    id: 4,
+    settings: JSON.stringify({
+      clients: [{ email: 'Mobbim-2', subId: 'mobbim-sub', enable: true }]
+    }),
+    clientStats: []
+  };
+  const runtime = {
+    async request(target) {
+      if (target.url.endsWith('/onlines')) {
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ success: true, obj: ['Mobbim-2'] })
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({ success: true, obj: [firstInbound, secondInbound] })
+      };
+    }
+  };
+
+  const result = await listCreatedPanelClients(runtime, [firstInboundPanel, secondInboundPanel], {
+    includeSubscriptionUsage: false
+  });
+
+  assert.equal(result.clients.length, 1);
+  assert.equal(result.clients[0].enabledPanels, 0);
+  assert.equal(result.clients[0].totalPanels, 1);
+  assert.equal(result.clients[0].panels.length, 1);
+  assert.equal(result.clients[0].panels[0].panel, 'edge-panel');
+  assert.equal(result.clients[0].panels[0].status, 'Partial');
+  assert.equal(result.clients[0].panels[0].email, 'Mobbim');
 });
 
 test('updates created clients while preserving untouched client fields', async () => {

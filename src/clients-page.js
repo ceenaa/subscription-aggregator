@@ -102,19 +102,21 @@ function quickExpiryForm(client) {
 
 function panelRows(client) {
   return client.panels
-    .map(
-      (panel) => `
+    .map((panel) => {
+      const status = panel.status || (panel.enabled ? 'Active' : 'Inactive');
+
+      return `
         <tr>
           <td>
             <strong>${escapeHtml(panel.panel)}</strong>
             <span>${escapeHtml(panel.proxy)} route</span>
           </td>
-          <td>${escapeHtml(panel.enabled ? 'Active' : 'Inactive')}</td>
+          <td>${escapeHtml(status)}</td>
           <td>${escapeHtml(panel.quotaDivisor)}</td>
           <td>${escapeHtml(panel.email)}</td>
         </tr>
-      `
-    )
+      `;
+    })
     .join('');
 }
 
