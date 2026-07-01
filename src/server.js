@@ -189,7 +189,7 @@ function panelValuesFromBody(body) {
   return {
     name: params.get('name') || '',
     addClientUrl: params.get('addClientUrl') || '',
-    cookie: params.get('cookie') || '',
+    apiKey: params.get('apiKey') || '',
     proxy: params.get('proxy') || '',
     totalGbRatio: params.get('totalGbRatio') || '',
     quotaDivisor: params.get('quotaDivisor') || '',

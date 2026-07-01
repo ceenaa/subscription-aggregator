@@ -59,6 +59,10 @@ function editForm(client) {
           <input type="hidden" name="expiryTime" data-expiry-time>
         </label>
         <label class="checkbox-label">
+          <input type="checkbox" name="expiryAfterDays" value="30" data-expiry-after-days>
+          <span>Expire in 30 days</span>
+        </label>
+        <label class="checkbox-label">
           <input type="checkbox" name="clearExpiry" value="true" data-clear-expiry>
           <span>No expiry</span>
         </label>
@@ -755,7 +759,12 @@ export function renderClientsPage({
 
     .edit-fields {
       display: grid;
-      grid-template-columns: minmax(140px, 170px) minmax(150px, 180px) minmax(210px, 240px) minmax(110px, 130px);
+      grid-template-columns:
+        minmax(130px, 160px)
+        minmax(140px, 170px)
+        minmax(200px, 230px)
+        minmax(130px, 150px)
+        minmax(100px, 120px);
       gap: 10px;
       align-items: end;
     }

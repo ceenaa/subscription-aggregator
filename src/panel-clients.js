@@ -1,7 +1,6 @@
 import {
   buildUpdateClientRequest,
   clientLooksEnabled,
-  fetchPanelCsrfToken,
   fetchPanelInbounds,
   fetchPanelOnlineClients,
   indexInboundClients
@@ -139,7 +138,7 @@ function panelApiIdentity(panel) {
 }
 
 function panelListKey(panel) {
-  return `${panelApiIdentity(panel)}\u0000${panel.cookie || ''}`;
+  return `${panelApiIdentity(panel)}\u0000${panel.apiKey || ''}`;
 }
 
 function panelGroupKey(panel) {
@@ -376,11 +375,6 @@ function parsePanelPayload(body, panelName) {
 
 async function updatePanelClient(runtime, entry, updates) {
   const request = buildUpdateClientRequest(entry.panel, entry.inbound, entry.client, entry.stat, updates);
-  const headers = { ...request.headers };
-  if (entry.panel.cookie) {
-    const token = await fetchPanelCsrfToken(runtime, entry.panel);
-    if (token) headers['X-CSRF-Token'] = token;
-  }
   const response = await runtime.request(
     {
       name: entry.panel.name,
@@ -389,7 +383,7 @@ async function updatePanelClient(runtime, entry, updates) {
     },
     {
       method: request.method,
-      headers,
+      headers: request.headers,
       body: request.body
     }
   );

@@ -31,7 +31,7 @@ Limit parallel client updates with:
 WORKER_CONCURRENCY=5
 ```
 
-The worker loads the same panel/inbound config used by `/inbounds`, calls each physical panel's `inbounds/list` endpoint once per run, finds each enabled configured inbound ID, and matches clients by `subId`. If multiple configured inbounds share the same panel URL, cookie, and route, the list response is reused. If a client does not exist on every enabled configured inbound, it is skipped.
+The worker loads the same panel/inbound config used by `/inbounds`, calls each physical panel's `inbounds/list` endpoint once per run, finds each enabled configured inbound ID, and matches clients by `subId`. If multiple configured inbounds share the same panel URL, API key, and route, the list response is reused. If a client does not exist on every enabled configured inbound, it is skipped.
 
 The worker only evaluates matched clients that are active on at least one inbound. If the client is already disabled on every enabled configured inbound, it is skipped.
 
@@ -125,7 +125,7 @@ FIRST_SUBSCRIPTION_PROXY=direct npm run print:plain -- YOUR_TOKEN
 
 `FIRST_SUBSCRIPTION_*`, `SECOND_SUBSCRIPTION_*`, and `THIRD_SUBSCRIPTION_*` are still accepted as fallback subscription sources for older installs. SQLite subscription sources are listed first, and env sources whose `baseUrl` and route are not already configured in SQLite are appended. New sources should be added on each inbound in `/settings`.
 
-If an existing `.env` contains `FIRST_PANEL_*`, `SECOND_PANEL_*`, or `THIRD_PANEL_*`, the first startup creates the SQLite database and migrates those panel/inbound records once. After that, edit them in `/settings`.
+If an existing `.env` contains `FIRST_PANEL_*`, `SECOND_PANEL_*`, or `THIRD_PANEL_*`, the first startup creates the SQLite database and migrates those panel/inbound records once. Use `FIRST_PANEL_API_KEY`, `SECOND_PANEL_API_KEY`, or `THIRD_PANEL_API_KEY` for their 3x-ui API keys. After that, edit them in `/settings`.
 
 If Xray is only inside this project and not installed globally, set:
 
@@ -175,13 +175,15 @@ Set `ADMIN_USERNAME` and `ADMIN_PASSWORD`, then open the settings page first and
 https://your-domain.com/settings
 ```
 
-`/settings` is blocked unless admin auth is configured and the request is authenticated, because it stores panel cookies.
+`/settings` is blocked unless admin auth is configured and the request is authenticated, because it stores panel API keys.
+
+Create a token in each 3x-ui panel under `Authentication → API Token`, copy it when it is first shown, and enter it as that panel's API key. The aggregator sends it as `Authorization: Bearer <token>` to `/panel/api/*`; bearer-authenticated mutations do not require a session cookie or CSRF token.
 
 Panel fields:
 
 - `Name`
 - `Add Client URL`, ending with `/api/inbounds/addClient`
-- `Cookie`
+- `API Key`
 - `API Route`, either `direct` or `xray`
 - `Total GB Ratio`
 - `Quota Divisor`
@@ -242,11 +244,13 @@ The `/clients` page reads each configured panel's `inbounds/list` endpoint, show
 
 Panel mutations run Xray-routed panels before direct panels. Each Xray mutation gets the initial attempt plus three retries; if an Xray mutation still fails, later panel mutations are skipped so direct panels are not updated alone.
 
-Panel cookies are sensitive. They are stored in the SQLite database, which is ignored by git through `*.sqlite3`:
+Panel API keys are sensitive. They are stored in the SQLite database, which is ignored by git through `*.sqlite3`:
 
 ```text
 ./data/subscription-aggregator.sqlite3
 ```
+
+After upgrading from a cookie-based version, enter an API key for every existing panel in `/settings`. Stored cookie values are no longer read or sent.
 
 ## Notes
 

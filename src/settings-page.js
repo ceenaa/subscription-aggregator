@@ -42,15 +42,6 @@ function field(name, label, value = '', options = {}) {
   `;
 }
 
-function textarea(name, label, value = '') {
-  return `
-    <label class="wide">
-      <span>${escapeHtml(label)}</span>
-      <textarea name="${escapeHtml(name)}" rows="3">${escapeHtml(value)}</textarea>
-    </label>
-  `;
-}
-
 function panelSelect(panels, value = '') {
   return `
     <label>
@@ -82,6 +73,11 @@ function panelForm(panel = null) {
           required: true,
           placeholder: 'https://panel.example/path/api/clients/add'
         })}
+        ${field('apiKey', 'API Key', panel?.api_key || '', {
+          type: 'password',
+          required: true,
+          placeholder: '3x-ui API token'
+        })}
         <label>
           <span>API Route</span>
           <select name="proxy">${proxyOptions(panel?.proxy || 'direct')}</select>
@@ -111,7 +107,6 @@ function panelForm(panel = null) {
           <span>Enabled</span>
           <input type="checkbox" name="enabled" value="true" ${checked(panel ? panel.enabled : true)}>
         </label>
-        ${textarea('cookie', 'Cookie', panel?.cookie || '')}
       </div>
       <div class="actions">
         <button type="submit">${isEdit ? 'Save Panel' : 'Add Panel'}</button>

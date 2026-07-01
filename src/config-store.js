@@ -60,7 +60,7 @@ function ensureDatabase(db) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       add_client_url TEXT NOT NULL DEFAULT '',
-      cookie TEXT NOT NULL DEFAULT '',
+      api_key TEXT NOT NULL DEFAULT '',
       proxy TEXT NOT NULL DEFAULT 'direct',
       total_gb_ratio REAL NOT NULL DEFAULT 1,
       quota_divisor REAL NOT NULL DEFAULT 1,
@@ -90,6 +90,7 @@ function ensureDatabase(db) {
     CREATE INDEX IF NOT EXISTS idx_inbounds_panel_id ON inbounds(panel_id);
     CREATE INDEX IF NOT EXISTS idx_inbounds_enabled ON inbounds(enabled);
   `);
+  ensureColumn(db, 'panels', 'api_key', "api_key TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'panels', 'total_gb_ratio', 'total_gb_ratio REAL NOT NULL DEFAULT 1');
   ensureColumn(db, 'panels', 'quota_divisor', 'quota_divisor REAL NOT NULL DEFAULT 1');
   ensureColumn(db, 'panels', 'xtls_vision_flow', 'xtls_vision_flow INTEGER NOT NULL DEFAULT 0');
@@ -177,7 +178,7 @@ function hasLegacyPanelConfig(env, prefix) {
   return [
     'NAME',
     'ADD_CLIENT_URL',
-    'COOKIE',
+    'API_KEY',
     'INBOUND_ID',
     'PROXY',
     'TOTAL_GB_RATIO',
@@ -221,7 +222,7 @@ function readLegacyPanelConfigs(env) {
       return {
         name: env[`${defaults.prefix}_PANEL_NAME`] || defaults.name,
         addClientUrl: env[`${defaults.prefix}_PANEL_ADD_CLIENT_URL`] || '',
-        cookie: env[`${defaults.prefix}_PANEL_COOKIE`] || '',
+        apiKey: env[`${defaults.prefix}_PANEL_API_KEY`] || '',
         inboundId: env[`${defaults.prefix}_PANEL_INBOUND_ID`] || '',
         proxy: normalizeProxy(env[`${defaults.prefix}_PANEL_PROXY`], defaults.proxy),
         totalGbRatio: readOptionalNumberEnv(env, `${defaults.prefix}_PANEL_TOTAL_GB_RATIO`, 1),
@@ -235,7 +236,7 @@ function readLegacyPanelConfigs(env) {
 }
 
 function legacyPanelKey(panel) {
-  return [panel.addClientUrl, panel.cookie, panel.proxy].join('\u0000');
+  return [panel.addClientUrl, panel.apiKey, panel.proxy].join('\u0000');
 }
 
 function seedLegacyConfiguration(db, env) {
@@ -259,7 +260,7 @@ function seedLegacyConfiguration(db, env) {
         INSERT INTO panels (
           name,
           add_client_url,
-          cookie,
+          api_key,
           proxy,
           total_gb_ratio,
           quota_divisor,
@@ -269,7 +270,7 @@ function seedLegacyConfiguration(db, env) {
       `).run(
         legacyPanel.name,
         legacyPanel.addClientUrl,
-        legacyPanel.cookie,
+        legacyPanel.apiKey,
         legacyPanel.proxy,
         legacyPanel.totalGbRatio,
         legacyPanel.quotaDivisor
@@ -322,7 +323,7 @@ function mapConfiguredInbound(row) {
     panelName: row.panelName,
     inboundName: row.inboundName || '',
     addClientUrl: row.addClientUrl,
-    cookie: row.cookie,
+    apiKey: row.apiKey,
     inboundId: row.inboundId,
     proxy: row.proxy,
     totalGbRatio: Number(row.totalGbRatio) || 1,
@@ -339,7 +340,7 @@ function configuredInboundRows(db) {
       panels.name AS panelName,
       inbounds.name AS inboundName,
       panels.add_client_url AS addClientUrl,
-      panels.cookie AS cookie,
+      panels.api_key AS apiKey,
       panels.proxy AS proxy,
       panels.total_gb_ratio AS totalGbRatio,
       panels.quota_divisor AS quotaDivisor,
@@ -440,7 +441,7 @@ function normalizePanelInput(input) {
       required: true,
       addClientPath: true
     }),
-    cookie: optionalText(input.cookie),
+    apiKey: requireText(input.apiKey, 'API key'),
     proxy: normalizeProxy(input.proxy, 'direct'),
     totalGbRatio: readPositiveNumber(input.totalGbRatio, 'total GB ratio', 1),
     quotaDivisor: readPositiveNumber(input.quotaDivisor, 'quota divisor', 1),
@@ -491,7 +492,7 @@ export function createPanel(databasePath, input) {
       INSERT INTO panels (
         name,
         add_client_url,
-        cookie,
+        api_key,
         proxy,
         total_gb_ratio,
         quota_divisor,
@@ -502,7 +503,7 @@ export function createPanel(databasePath, input) {
     `).run(
       panel.name,
       panel.addClientUrl,
-      panel.cookie,
+      panel.apiKey,
       panel.proxy,
       panel.totalGbRatio,
       panel.quotaDivisor,
@@ -522,7 +523,7 @@ export function updatePanel(databasePath, id, input) {
       SET
         name = ?,
         add_client_url = ?,
-        cookie = ?,
+        api_key = ?,
         proxy = ?,
         total_gb_ratio = ?,
         quota_divisor = ?,
@@ -533,7 +534,7 @@ export function updatePanel(databasePath, id, input) {
     `).run(
       panel.name,
       panel.addClientUrl,
-      panel.cookie,
+      panel.apiKey,
       panel.proxy,
       panel.totalGbRatio,
       panel.quotaDivisor,

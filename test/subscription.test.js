@@ -410,7 +410,7 @@ test('builds 3x-ui addClient JSON requests without real panel values', () => {
   const panel = {
     name: 'first-panel',
     addClientUrl: 'https://panel.example/secret/panel/api/inbounds/addClient',
-    cookie: '3x-ui=fake-cookie; lang=en-US',
+    apiKey: 'fake-api-key',
     inboundId: '4',
     proxy: 'xray'
   };
@@ -440,7 +440,8 @@ test('builds 3x-ui addClient JSON requests without real panel values', () => {
   assert.equal(body.client.limitIp, 0);
   assert.equal(body.client.tgId, 0);
   assert.equal(body.client.comment, '');
-  assert.equal(request.headers.Cookie, panel.cookie);
+  assert.equal(request.headers.Authorization, `Bearer ${panel.apiKey}`);
+  assert.equal(request.headers.Cookie, undefined);
   assert.equal(request.headers.Origin, 'https://panel.example');
   assert.equal(request.headers['Content-Type'], 'application/json');
   assert.equal(request.method, 'POST');
@@ -461,6 +462,7 @@ test('applies panel total flow ratios as divisors to addClient requests', () => 
     {
       name: 'first-panel',
       addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'xray',
       totalGbRatio: 1
@@ -471,6 +473,7 @@ test('applies panel total flow ratios as divisors to addClient requests', () => 
     {
       name: 'second-panel',
       addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct',
       totalGbRatio: 2
@@ -487,6 +490,7 @@ test('applies a panel XTLS vision flow to addClient requests', () => {
     {
       name: 'vision-inbound',
       addClientUrl: 'https://vision-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct',
       clientFlow: 'xtls-rprx-vision'
@@ -521,6 +525,7 @@ test('batches same-server inbounds into one addClient request', async () => {
     {
       name: 'first-panel',
       addClientUrl: 'https://same-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct',
       totalGbRatio: 1
@@ -528,6 +533,7 @@ test('batches same-server inbounds into one addClient request', async () => {
     {
       name: 'second-panel',
       addClientUrl: 'https://same-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '6',
       proxy: 'direct',
       totalGbRatio: 1
@@ -535,6 +541,7 @@ test('batches same-server inbounds into one addClient request', async () => {
     {
       name: 'third-panel',
       addClientUrl: 'https://other-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '8',
       proxy: 'direct',
       totalGbRatio: 1
@@ -543,7 +550,7 @@ test('batches same-server inbounds into one addClient request', async () => {
   const requests = [];
   const runtime = {
     async request(target, options) {
-      requests.push({ name: target.name, body: JSON.parse(options.body) });
+      requests.push({ name: target.name, body: JSON.parse(options.body), headers: options.headers });
       return {
         statusCode: 200,
         headers: {},
@@ -556,6 +563,9 @@ test('batches same-server inbounds into one addClient request', async () => {
 
   // Two servers → two API requests (not three)
   assert.equal(requests.length, 2);
+  assert.equal(requests.every((request) => request.headers.Authorization === 'Bearer test-api-key'), true);
+  assert.equal(requests.every((request) => request.headers.Cookie === undefined), true);
+  assert.equal(requests.every((request) => request.headers['X-CSRF-Token'] === undefined), true);
 
   // same-panel.example: one request with both inbound IDs
   assert.deepEqual(requests[0].body.inboundIds, [4, 6]);
@@ -587,6 +597,7 @@ test('creates clients through Xray panels before direct panels and skips direct 
     {
       name: 'xray-panel',
       addClientUrl: 'https://xray-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'xray',
       totalGbRatio: 1
@@ -594,6 +605,7 @@ test('creates clients through Xray panels before direct panels and skips direct 
     {
       name: 'direct-panel',
       addClientUrl: 'https://direct-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '6',
       proxy: 'direct',
       totalGbRatio: 1
@@ -629,7 +641,7 @@ test('builds 3x-ui list and update requests for the quota worker', () => {
   const panel = {
     name: 'first-panel',
     addClientUrl: 'https://panel.example/secret/panel/api/inbounds/addClient',
-    cookie: '3x-ui=fake-cookie; lang=en-US',
+    apiKey: 'fake-api-key',
     inboundId: '4',
     proxy: 'xray'
   };
@@ -648,11 +660,12 @@ test('builds 3x-ui list and update requests for the quota worker', () => {
   const updateBody = JSON.parse(updateRequest.body);
 
   assert.equal(listRequest.url, 'https://panel.example/secret/panel/api/inbounds/list');
-  assert.equal(listRequest.headers.Cookie, panel.cookie);
+  assert.equal(listRequest.headers.Authorization, `Bearer ${panel.apiKey}`);
+  assert.equal(listRequest.headers.Cookie, undefined);
   assert.equal(onlineRequest.url, 'https://panel.example/secret/panel/api/clients/onlines');
   assert.equal(onlineRequest.method, 'POST');
   assert.equal(onlineRequest.body, '');
-  assert.equal(onlineRequest.headers.Cookie, panel.cookie);
+  assert.equal(onlineRequest.headers.Authorization, `Bearer ${panel.apiKey}`);
   assert.equal(onlineRequest.headers.Origin, 'https://panel.example');
   assert.equal(onlineRequest.headers['Content-Type'], 'application/x-www-form-urlencoded; charset=UTF-8');
   assert.equal(updateRequest.url, 'https://panel.example/secret/panel/api/clients/update/client%40example.com');
@@ -660,6 +673,27 @@ test('builds 3x-ui list and update requests for the quota worker', () => {
   assert.equal(updateBody.enable, false);
   assert.equal(updateBody.totalGB, 5 * 1024 ** 3);
   assert.equal(updateRequest.headers.Origin, 'https://panel.example');
+});
+
+test('rejects panel requests without an API key', () => {
+  const panel = {
+    name: 'missing-key',
+    addClientUrl: 'https://panel.example/secret/panel/api/inbounds/addClient',
+    inboundId: '4',
+    proxy: 'direct'
+  };
+
+  assert.throws(() => buildListInboundsRequest(panel), /missing-key panel is missing apiKey/);
+  assert.throws(
+    () =>
+      buildAddClientRequest(panel, {
+        email: 'client@example.com',
+        subId: 'clienttoken123',
+        totalGB: '0',
+        durationDays: '0'
+      }),
+    /missing-key panel is missing apiKey/
+  );
 });
 
 test('indexes inbound clients and evaluates ratio quota conditions', () => {
@@ -819,6 +853,7 @@ test('lists only clients present in every configured panel inbound', async () =>
   const firstPanel = {
     name: 'cdn1',
     addClientUrl: 'https://cdn1.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'xray',
     quotaDivisor: 2
@@ -826,6 +861,7 @@ test('lists only clients present in every configured panel inbound', async () =>
   const secondPanel = {
     name: 'second-panel',
     addClientUrl: 'https://second.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '8',
     proxy: 'direct',
     quotaDivisor: 1
@@ -977,6 +1013,8 @@ test('lists only clients present in every configured panel inbound', async () =>
   assert.match(html, /action="\/clients\/edit"/);
   assert.match(html, /name="expiryAfterDays" value="30"/);
   assert.match(html, /Set expiry to 30 days from now/);
+  assert.match(html, /data-expiry-after-days/);
+  assert.match(html, /Expire in 30 days/);
   assert.match(html, /Add Usage \(GB\)/);
   assert.match(html, /data-expiry-time/);
   assert.match(html, /No expiry/);
@@ -1027,6 +1065,7 @@ test('summarizes multiple inbounds from the same panel once', async () => {
     panelName: 'cdn-panel',
     panelDbId: 10,
     addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '6',
     proxy: 'xray',
     quotaDivisor: 1
@@ -1036,6 +1075,7 @@ test('summarizes multiple inbounds from the same panel once', async () => {
     panelName: 'cdn-panel',
     panelDbId: 10,
     addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'xray',
     quotaDivisor: 1
@@ -1118,6 +1158,7 @@ test('counts shared same-panel client usage once on the clients page', async () 
     panelName: 'cdn-panel',
     panelDbId: 10,
     addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '6',
     proxy: 'xray',
     quotaDivisor: 1
@@ -1127,6 +1168,7 @@ test('counts shared same-panel client usage once on the clients page', async () 
     panelName: 'cdn-panel',
     panelDbId: 10,
     addClientUrl: 'https://cdn.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'xray',
     quotaDivisor: 1
@@ -1200,6 +1242,7 @@ test('uses one logical status for a same-panel shared client', async () => {
     panelName: 'edge-panel',
     panelDbId: 10,
     addClientUrl: 'https://edge.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '6',
     proxy: 'xray',
     quotaDivisor: 1
@@ -1209,6 +1252,7 @@ test('uses one logical status for a same-panel shared client', async () => {
     panelName: 'edge-panel',
     panelDbId: 10,
     addClientUrl: 'https://edge.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'xray',
     quotaDivisor: 1
@@ -1263,6 +1307,7 @@ test('updates created clients while preserving untouched client fields', async (
   const firstPanel = {
     name: 'first-panel',
     addClientUrl: 'https://first.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct',
     totalGbRatio: 1
@@ -1270,6 +1315,7 @@ test('updates created clients while preserving untouched client fields', async (
   const secondPanel = {
     name: 'second-panel',
     addClientUrl: 'https://second.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '8',
     proxy: 'direct',
     totalGbRatio: 2
@@ -1389,6 +1435,7 @@ test('updates a shared same-panel client once', async () => {
     panelName: 'edge-panel',
     panelDbId: 10,
     addClientUrl: 'https://edge.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     proxy: 'direct',
     totalGbRatio: 1
   };
@@ -1471,6 +1518,7 @@ test('updates clients through Xray panels before direct panels and skips direct 
   const xrayPanel = {
     name: 'xray-panel',
     addClientUrl: 'https://xray.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'xray',
     totalGbRatio: 1
@@ -1478,6 +1526,7 @@ test('updates clients through Xray panels before direct panels and skips direct 
   const directPanel = {
     name: 'direct-panel',
     addClientUrl: 'https://direct.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '8',
     proxy: 'direct',
     totalGbRatio: 1
@@ -1550,18 +1599,21 @@ test('quota worker skips fully disabled groups and disables active groups on eve
   const firstPanel = {
     name: 'first-panel',
     addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
   const secondPanel = {
     name: 'second-panel',
     addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
   const thirdPanel = {
     name: 'third-panel',
     addClientUrl: 'https://third-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '6',
     proxy: 'direct'
   };
@@ -1689,7 +1741,7 @@ test('quota worker reuses one list response for shared physical panel inbounds',
   const gib = 1024 ** 3;
   const basePanel = {
     addClientUrl: 'https://shared-panel.example/secret/panel/api/inbounds/addClient',
-    cookie: 'session=shared',
+    apiKey: 'shared-api-key',
     proxy: 'direct'
   };
   const firstPanel = {
@@ -1758,7 +1810,7 @@ test('quota worker counts shared same-panel client usage once before enforcing',
   const gib = 1024 ** 3;
   const basePanel = {
     addClientUrl: 'https://shared-panel.example/secret/panel/api/inbounds/addClient',
-    cookie: 'session=shared',
+    apiKey: 'shared-api-key',
     proxy: 'direct'
   };
   const firstPanel = {
@@ -1821,6 +1873,7 @@ test('quota worker disables a shared same-panel client once', async () => {
     panelName: 'edge-panel',
     panelDbId: 10,
     addClientUrl: 'https://shared-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     proxy: 'direct'
   };
   const firstPanel = {
@@ -1900,6 +1953,7 @@ test('quota worker ignores subscription sources and uses panel stats', async () 
   const panel = {
     name: 'usage-panel',
     addClientUrl: 'https://usage-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
@@ -1972,12 +2026,14 @@ test('quota worker retries Xray disables and skips direct panels after Xray fail
   const xrayPanel = {
     name: 'xray-panel',
     addClientUrl: 'https://xray-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'xray'
   };
   const directPanel = {
     name: 'direct-panel',
     addClientUrl: 'https://direct-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '6',
     proxy: 'direct'
   };
@@ -2049,18 +2105,21 @@ test('quota worker reports panels that were already disabled before an update', 
     {
       name: 'aws',
       addClientUrl: 'https://aws.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct'
     },
     {
       name: 'reverse',
       addClientUrl: 'https://reverse.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct'
     },
     {
       name: 'cloudflare',
       addClientUrl: 'https://cloudflare.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct'
     }
@@ -2145,12 +2204,14 @@ test('quota worker treats client settings enable as authoritative', async () => 
     {
       name: 'first-panel',
       addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct'
     },
     {
       name: 'second-panel',
       addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+      apiKey: 'test-api-key',
       inboundId: '4',
       proxy: 'direct'
     }
@@ -2221,12 +2282,14 @@ test('quota worker retries direct panel disables before marking partial', async 
   const firstPanel = {
     name: 'first-panel',
     addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
   const secondPanel = {
     name: 'second-panel',
     addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
@@ -2305,12 +2368,14 @@ test('quota worker verifies successful disable responses changed panel state', a
   const firstPanel = {
     name: 'first-panel',
     addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
   const secondPanel = {
     name: 'second-panel',
     addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
@@ -2390,12 +2455,14 @@ test('quota worker logs partial disabled when only one panel update succeeds', a
   const firstPanel = {
     name: 'first-panel',
     addClientUrl: 'https://first-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
   const secondPanel = {
     name: 'second-panel',
     addClientUrl: 'https://second-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'test-api-key',
     inboundId: '4',
     proxy: 'direct'
   };
@@ -2552,7 +2619,7 @@ test('renders the settings panel client controls', () => {
         id: 1,
         name: 'panel',
         add_client_url: 'https://panel.example/secret/panel/api/inbounds/addClient',
-        cookie: '',
+        api_key: 'panel-api-key',
         proxy: 'direct',
         total_gb_ratio: 1.5,
         quota_divisor: 2,
@@ -2579,6 +2646,9 @@ test('renders the settings panel client controls', () => {
   assert.match(html, /Total GB Ratio/);
   assert.match(html, /Quota Divisor/);
   assert.match(html, /XTLS Vision Flow/);
+  assert.match(html, /API Key/);
+  assert.match(html, /name="apiKey"/);
+  assert.doesNotMatch(html, /Cookie/);
   assert.match(html, /name="xtlsVisionFlow"/);
   assert.match(html, /ratio 1\.5/);
   assert.match(html, /divisor 2/);
@@ -2618,6 +2688,7 @@ test('checks optional basic admin auth', () => {
       SECOND_PANEL_TOTAL_GB_RATIO: '2',
       THIRD_PANEL_NAME: 'third-panel',
       THIRD_PANEL_ADD_CLIENT_URL: 'https://third-panel.example/secret/panel/api/inbounds/addClient',
+      THIRD_PANEL_API_KEY: 'third-api-key',
       THIRD_PANEL_INBOUND_ID: '6',
       THIRD_PANEL_TOTAL_GB_RATIO: '3',
       THIRD_PANEL_CONFIG_COUNT: '4'
@@ -2634,6 +2705,7 @@ test('checks optional basic admin auth', () => {
   assert.equal(config.panels[1].totalGbRatio, 2);
   assert.equal(config.panels[1].quotaDivisor, 1);
   assert.equal(config.panels[2].name, 'third-panel');
+  assert.equal(config.panels[2].apiKey, 'third-api-key');
   assert.equal(config.panels[2].inboundId, '6');
   assert.equal(config.panels[2].totalGbRatio, 3);
   assert.equal(config.panels[2].quotaDivisor, 4);
@@ -2644,7 +2716,7 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   const firstPanelId = createPanel(databasePath, {
     name: 'edge-panel',
     addClientUrl: 'https://edge-panel.example/secret/panel/api/inbounds/addClient',
-    cookie: '3x-ui=edge',
+    apiKey: 'edge-api-key',
     proxy: 'xray',
     totalGbRatio: '1.5',
     quotaDivisor: '2',
@@ -2654,7 +2726,7 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   const secondPanelId = createPanel(databasePath, {
     name: 'core-panel',
     addClientUrl: 'https://core-panel.example/secret/panel/api/inbounds/addClient',
-    cookie: '3x-ui=core',
+    apiKey: 'core-api-key',
     proxy: 'direct',
     totalGbRatio: '3',
     quotaDivisor: '4',
@@ -2771,6 +2843,8 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   assert.equal(settings.panels[0].total_gb_ratio, 1.5);
   assert.equal(settings.panels[0].quota_divisor, 2);
   assert.equal(settings.panels[0].xtls_vision_flow, 1);
+  assert.equal(settings.panels[0].api_key, 'edge-api-key');
+  assert.equal(Object.hasOwn(settings.panels[0], 'cookie'), false);
 
   updateInbound(databasePath, disabledInboundId, {
     panelId: firstPanelId,
@@ -2787,11 +2861,45 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   assert.deepEqual(config.sources.map((source) => source.name), ['edge 443', 'core 443']);
 });
 
+test('adds API key storage to an existing cookie-era sqlite database', () => {
+  const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec(`
+      CREATE TABLE panels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        add_client_url TEXT NOT NULL DEFAULT '',
+        cookie TEXT NOT NULL DEFAULT '',
+        proxy TEXT NOT NULL DEFAULT 'direct',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    db.prepare(`
+      INSERT INTO panels (name, add_client_url, cookie)
+      VALUES (?, ?, ?)
+    `).run(
+      'old-panel',
+      'https://old-panel.example/secret/panel/api/inbounds/addClient',
+      '3x-ui=old-session'
+    );
+  } finally {
+    db.close();
+  }
+
+  const settings = loadSettingsData(databasePath);
+  assert.equal(settings.panels[0].api_key, '');
+});
+
 test('migrates legacy inbound client settings to panel settings', () => {
   const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
   const panelId = createPanel(databasePath, {
     name: 'legacy-panel',
     addClientUrl: 'https://legacy-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'legacy-api-key',
     proxy: 'direct',
     enabled: true
   });
@@ -2883,6 +2991,7 @@ test('merges sqlite subscription sources with non-duplicate env sources', () => 
   const firstPanelId = createPanel(databasePath, {
     name: 'source-panel',
     addClientUrl: 'https://source-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'source-api-key',
     proxy: 'direct',
     totalGbRatio: '1',
     enabled: true
@@ -2890,6 +2999,7 @@ test('merges sqlite subscription sources with non-duplicate env sources', () => 
   const extraPanelId = createPanel(databasePath, {
     name: 'source-extra-panel',
     addClientUrl: 'https://source-extra-panel.example/secret/panel/api/inbounds/addClient',
+    apiKey: 'source-extra-api-key',
     proxy: 'direct',
     totalGbRatio: '0.5',
     enabled: true
@@ -2965,6 +3075,7 @@ test('legacy panel migration is not marked done before legacy panel env exists',
       SECOND_SUBSCRIPTION_BASE_URL: '',
       FIRST_PANEL_NAME: 'late-panel',
       FIRST_PANEL_ADD_CLIENT_URL: 'https://late-panel.example/secret/panel/api/inbounds/addClient',
+      FIRST_PANEL_API_KEY: 'late-api-key',
       FIRST_PANEL_INBOUND_ID: '9',
       FIRST_PANEL_PROXY: 'direct'
     })
@@ -2974,6 +3085,7 @@ test('legacy panel migration is not marked done before legacy panel env exists',
   assert.equal(settings.panels.length, 1);
   assert.equal(settings.inbounds.length, 1);
   assert.equal(config.panels[0].name, 'late-panel');
+  assert.equal(config.panels[0].apiKey, 'late-api-key');
   assert.equal(config.panels[0].inboundId, '9');
 });
 

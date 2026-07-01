@@ -323,23 +323,40 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     });
   }
 
-  for (const checkbox of document.querySelectorAll('[data-clear-expiry]')) {
-    const dateInput = checkbox.closest('form')?.querySelector('[data-expiry-date]');
-    const sync = () => {
+  for (const editForm of document.querySelectorAll('[data-edit-panel]')) {
+    const dateInput = editForm.querySelector('[data-expiry-date]');
+    const expiryAfterDays = editForm.querySelector('[data-expiry-after-days]');
+    const clearExpiry = editForm.querySelector('[data-clear-expiry]');
+
+    const syncExpiryControls = (changedControl) => {
       if (!dateInput) return;
-      dateInput.disabled = checkbox.checked;
-      if (checkbox.checked) dateInput.value = '';
+
+      if (changedControl === expiryAfterDays && expiryAfterDays.checked) {
+        if (clearExpiry) clearExpiry.checked = false;
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const localTime = new Date(expiresAt.getTime() - expiresAt.getTimezoneOffset() * 60 * 1000);
+        dateInput.value = localTime.toISOString().slice(0, 16);
+        dateInput.dataset.autoExpiry = 'true';
+      } else if (changedControl === expiryAfterDays && dateInput.dataset.autoExpiry === 'true') {
+        dateInput.value = '';
+        delete dateInput.dataset.autoExpiry;
+      }
+
+      if (changedControl === clearExpiry && clearExpiry.checked) {
+        if (expiryAfterDays) expiryAfterDays.checked = false;
+        dateInput.value = '';
+        delete dateInput.dataset.autoExpiry;
+      }
+
+      dateInput.disabled = Boolean(clearExpiry?.checked || expiryAfterDays?.checked);
     };
 
-    checkbox.addEventListener('change', sync);
-    sync();
-  }
+    expiryAfterDays?.addEventListener('change', () => syncExpiryControls(expiryAfterDays));
+    clearExpiry?.addEventListener('change', () => syncExpiryControls(clearExpiry));
+    syncExpiryControls();
 
-  for (const editForm of document.querySelectorAll('[data-edit-panel]')) {
     editForm.addEventListener('submit', () => {
-      const dateInput = editForm.querySelector('[data-expiry-date]');
       const timestampInput = editForm.querySelector('[data-expiry-time]');
-      const clearExpiry = editForm.querySelector('[data-clear-expiry]');
       if (!dateInput || !timestampInput) return;
 
       timestampInput.value =
