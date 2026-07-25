@@ -8,6 +8,8 @@ function numberOrZero(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+
 export function parseSubscriptionUserInfo(value) {
   const fields = {};
 
@@ -32,6 +34,7 @@ export function parseSubscriptionUserInfo(value) {
     total,
     remaining,
     expire: fields.expire ?? 0,
+    hasExpiryData: Object.hasOwn(fields, 'expire'),
     hasData: Object.keys(fields).length > 0
   };
 }
@@ -213,6 +216,14 @@ export function summarizeNormalizedUsage(results, options = {}) {
     normalizer: baseRatioUsageFromResult
   });
   const usages = usageResults.map(baseRatioUsageFromResult);
+  const expiryValues = usages
+    .map((usage) => numberOrZero(usage.expire))
+    .filter((expire) => expire > 0);
+  const expirySummary = {
+    expire: expiryValues.length > 0 ? Math.min(...expiryValues) : 0,
+    hasExpiryData: usages.length > 0 && usages.every((usage) => usage.hasExpiryData)
+  };
+
   if (usages.length === 0 || usages.some((usage) => !usage.hasData)) {
     return {
       upload: 0,
@@ -222,7 +233,8 @@ export function summarizeNormalizedUsage(results, options = {}) {
       remaining: 0,
       scale: 0,
       scales: [],
-      hasData: false
+      hasData: false,
+      ...expirySummary
     };
   }
 
@@ -230,7 +242,8 @@ export function summarizeNormalizedUsage(results, options = {}) {
   return {
     ...combined,
     upload: 0,
-    download: combined.used
+    download: combined.used,
+    ...expirySummary
   };
 }
 
@@ -238,8 +251,12 @@ export function formatSubscriptionUserInfo(usage) {
   const upload = Math.max(0, Math.round(numberOrZero(usage.upload)));
   const download = Math.max(0, Math.round(numberOrZero(usage.download ?? usage.used)));
   const total = Math.max(0, Math.round(numberOrZero(usage.total)));
+  const expire =
+    usage.hasExpiryData === false
+      ? 0
+      : Math.max(0, Math.round(numberOrZero(usage.expire)));
 
-  return `upload=${upload}; download=${download}; total=${total}; expire=0`;
+  return `upload=${upload}; download=${download}; total=${total}; expire=${expire}`;
 }
 
 export function formatBytes(bytes) {
@@ -260,4 +277,25 @@ export function formatBytes(bytes) {
 export function formatExpiry(unixSeconds) {
   if (!unixSeconds) return 'No expiry';
   return new Date(unixSeconds * 1000).toLocaleString('en-US');
+}
+
+export function remainingDaysUntilExpiry(unixSeconds, referenceDate = new Date()) {
+  const expire = numberOrZero(unixSeconds);
+  if (expire <= 0) return null;
+
+  const reference =
+    referenceDate instanceof Date ? referenceDate : new Date(referenceDate);
+  if (Number.isNaN(reference.getTime())) return null;
+
+  return Math.max(0, Math.ceil((expire * 1000 - reference.getTime()) / DAY_IN_MILLISECONDS));
+}
+
+export function formatRemainingDays(unixSeconds, referenceDate = new Date()) {
+  const expire = numberOrZero(unixSeconds);
+  if (expire <= 0) return 'No expiry';
+
+  const days = remainingDaysUntilExpiry(expire, referenceDate);
+  if (days === null) return 'Unknown';
+  if (days === 0) return 'Expired';
+  return `${days} day${days === 1 ? '' : 's'}`;
 }

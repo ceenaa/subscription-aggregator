@@ -1,4 +1,4 @@
-import { formatBytes } from './usage.js';
+import { formatBytes, remainingDaysUntilExpiry } from './usage.js';
 
 const SUBSCRIPTION_LINK_PROTOCOLS = new Set([
   'vless',
@@ -167,6 +167,24 @@ export function buildSubscriptionRemainingNoticeLink(usage) {
   return `ss://${userInfo}@127.0.0.1:3#${encodeURIComponent(label)}`;
 }
 
+export function buildSubscriptionRemainingDaysNoticeLink(usage, updatedAt = new Date()) {
+  const userInfo = toBase64Url('aes-128-gcm:subscription-notice-remaining-days');
+  const days = remainingDaysUntilExpiry(usage?.expire, updatedAt);
+  let value = 'نامشخص';
+
+  if (usage?.hasExpiryData !== false) {
+    if (!usage?.expire) {
+      value = 'نامحدود';
+    } else if (days === 0) {
+      value = 'منقضی شده';
+    } else if (days !== null) {
+      value = `${days} روز`;
+    }
+  }
+
+  return `ss://${userInfo}@127.0.0.1:4#${encodeURIComponent(`روزهای باقیمانده: ${value}`)}`;
+}
+
 export function buildSubscriptionNoticeLinks(updatedAt = new Date(), usage = null) {
   const dailyUpdateUserInfo = toBase64Url('aes-128-gcm:subscription-notice-daily-update');
   const notices = [
@@ -176,6 +194,7 @@ export function buildSubscriptionNoticeLinks(updatedAt = new Date(), usage = nul
 
   if (usage) {
     notices.push(buildSubscriptionRemainingNoticeLink(usage));
+    notices.push(buildSubscriptionRemainingDaysNoticeLink(usage, updatedAt));
   }
 
   return notices;

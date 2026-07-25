@@ -9,6 +9,7 @@ import { parseDotEnv } from '../src/env.js';
 import {
   aggregateSubscriptions,
   buildSubscriptionNoticeLink,
+  buildSubscriptionRemainingDaysNoticeLink,
   buildSubscriptionRemainingNoticeLink,
   decodeSubscriptionText,
   encodeSubscriptionLinks,
@@ -27,9 +28,12 @@ import { subscriptionAppLinks } from '../src/app-links.js';
 import { listCreatedPanelClients, updateCreatedPanelClient } from '../src/panel-clients.js';
 import {
   formatBytes,
+  formatRemainingDays,
+  formatSubscriptionUserInfo,
   normalizeCombinedUsage,
   normalizeQuotaUsage,
   parseSubscriptionUserInfo,
+  remainingDaysUntilExpiry,
   summarizeNormalizedUsage,
   summarizeUsage,
   usageFromResult
@@ -114,39 +118,49 @@ test('aggregates subscriptions and removes exact duplicates', async () => {
 });
 
 test('adds a local shadowsocks notice config for subscription clients', () => {
-  const notice = buildSubscriptionNoticeLink(new Date('2026-05-30T12:34:56Z'));
-  const remainingNotice = buildSubscriptionRemainingNoticeLink({
+  const updatedAt = new Date('2026-05-30T12:34:56Z');
+  const expire = Date.parse('2026-06-29T12:34:56Z') / 1000;
+  const usage = {
     hasData: true,
-    remaining: 5 * 1024 ** 3
-  });
+    hasExpiryData: true,
+    remaining: 5 * 1024 ** 3,
+    expire
+  };
+  const notice = buildSubscriptionNoticeLink(updatedAt);
+  const remainingNotice = buildSubscriptionRemainingNoticeLink(usage);
+  const remainingDaysNotice = buildSubscriptionRemainingDaysNoticeLink(usage, updatedAt);
   const noticeName = decodeURIComponent(notice.split('#')[1]);
   const remainingNoticeName = decodeURIComponent(remainingNotice.split('#')[1]);
+  const remainingDaysNoticeName = decodeURIComponent(remainingDaysNotice.split('#')[1]);
   const links = withSubscriptionNotice(['vless://user@example.com:443#real'], '2026-05-30T12:34:56Z');
   const linksWithUsage = withSubscriptionNotice(
     ['vless://user@example.com:443#real'],
-    '2026-05-30T12:34:56Z',
-    {
-      hasData: true,
-      remaining: 5 * 1024 ** 3
-    }
+    updatedAt,
+    usage
   );
   const noticeNames = links.slice(1).map((link) => decodeURIComponent(link.split('#')[1]));
   const usageNoticeName = decodeURIComponent(linksWithUsage[3].split('#')[1]);
+  const daysNoticeName = decodeURIComponent(linksWithUsage[4].split('#')[1]);
 
   assert.match(notice, /^ss:\/\//);
   assert.match(notice, /@127\.0\.0\.1:1#/);
   assert.match(remainingNotice, /^ss:\/\//);
   assert.match(remainingNotice, /@127\.0\.0\.1:3#/);
+  assert.match(remainingDaysNotice, /^ss:\/\//);
+  assert.match(remainingDaysNotice, /@127\.0\.0\.1:4#/);
   assert.match(noticeName, /آخرین بروزرسانی: 2026\/05\/30 16:04/);
   assert.equal(remainingNoticeName, 'باقیمانده کل: 5.00 GB');
+  assert.equal(remainingDaysNoticeName, 'روزهای باقیمانده: 30 روز');
   assert.equal(links.length, 3);
-  assert.equal(linksWithUsage.length, 4);
+  assert.equal(linksWithUsage.length, 5);
   assert.match(links[1], /^ss:\/\//);
   assert.match(links[1], /@127\.0\.0\.1:1#/);
   assert.match(links[2], /^ss:\/\//);
   assert.match(links[2], /@127\.0\.0\.1:2#/);
   assert.match(linksWithUsage[3], /@127\.0\.0\.1:3#/);
+  assert.match(linksWithUsage[4], /@127\.0\.0\.1:4#/);
   assert.equal(usageNoticeName, 'باقیمانده کل: 5.00 GB');
+  assert.equal(daysNoticeName, 'روزهای باقیمانده: 30 روز');
   assert.deepEqual(noticeNames, [
     'آخرین بروزرسانی: 2026/05/30 16:04',
     'لینک اشتراک را روزانه بروزرسانی کنید'
@@ -3136,7 +3150,33 @@ test('parses subscription usage headers', () => {
   assert.equal(usage.used, 4096);
   assert.equal(usage.total, 8192);
   assert.equal(usage.remaining, 4096);
+  assert.equal(usage.expire, 1790000000);
+  assert.equal(usage.hasExpiryData, true);
   assert.equal(formatBytes(usage.remaining), '4.00 KB');
+});
+
+test('summarizes the earliest expiry and formats remaining days', () => {
+  const updatedAt = new Date('2026-05-30T12:34:56Z');
+  const earlierExpiry = Date.parse('2026-06-29T12:34:56Z') / 1000;
+  const laterExpiry = Date.parse('2026-07-29T12:34:56Z') / 1000;
+  const usage = summarizeNormalizedUsage([
+    {
+      headers: {
+        'subscription-userinfo': `upload=1; download=1; total=10; expire=${laterExpiry}`
+      }
+    },
+    {
+      headers: {
+        'subscription-userinfo': `upload=1; download=1; total=10; expire=${earlierExpiry}`
+      }
+    }
+  ]);
+
+  assert.equal(usage.expire, earlierExpiry);
+  assert.equal(usage.hasExpiryData, true);
+  assert.equal(remainingDaysUntilExpiry(usage.expire, updatedAt), 30);
+  assert.equal(formatRemainingDays(usage.expire, updatedAt), '30 days');
+  assert.match(formatSubscriptionUserInfo(usage), new RegExp(`expire=${earlierExpiry}$`));
 });
 
 test('does not divide quota by link count when one panel returns multiple links', () => {
@@ -3246,6 +3286,8 @@ test('renders a local QR SVG', () => {
 });
 
 test('renders subscription info page with app links and copy targets', () => {
+  const earlierExpiry = Date.parse('2026-06-29T12:34:56Z') / 1000;
+  const laterExpiry = Date.parse('2026-07-29T12:34:56Z') / 1000;
   const html = renderSubscriptionPage({
     token: 'client-token',
     subscriptionUrl: 'http://127.0.0.1:3000/sub/client-token',
@@ -3259,14 +3301,14 @@ test('renders subscription info page with app links and copy targets', () => {
           source: { name: 'first', proxy: 'xray' },
           count: 1,
           headers: {
-            'subscription-userinfo': 'upload=1024; download=3072; total=8192; expire=0'
+            'subscription-userinfo': `upload=1024; download=3072; total=8192; expire=${earlierExpiry}`
           }
         },
         {
           source: { name: 'second', proxy: 'direct' },
           count: 1,
           headers: {
-            'subscription-userinfo': 'upload=2048; download=2048; total=16384; expire=0'
+            'subscription-userinfo': `upload=2048; download=2048; total=16384; expire=${laterExpiry}`
           }
         }
       ]
@@ -3281,6 +3323,8 @@ test('renders subscription info page with app links and copy targets', () => {
   assert.match(html, /Please update your subscription link daily/);
   assert.match(html, /Aggregated Remaining/);
   assert.match(html, /2\.00 KB/);
+  assert.match(html, /Days remaining/);
+  assert.match(html, /30 days/);
   assert.match(html, /http:\/\/127\.0\.0\.1:3000\/sub\/client-token/);
   assert.match(html, /Streisand iOS/);
   assert.match(html, /V2Box iOS/);

@@ -1,6 +1,12 @@
 import { renderQrSvg } from './qr.js';
 import { subscriptionAppLinks } from './app-links.js';
-import { formatBytes, formatExpiry, summarizeNormalizedUsage, usageFromResult } from './usage.js';
+import {
+  formatBytes,
+  formatExpiry,
+  formatRemainingDays,
+  summarizeNormalizedUsage,
+  usageFromResult
+} from './usage.js';
 
 function escapeHtml(value) {
   return String(value)
@@ -16,7 +22,17 @@ function percentage(used, total) {
   return Math.min(Math.max((used / total) * 100, 0), 100);
 }
 
-function usageRows(usage) {
+function expiryRemainingText(usage, referenceDate) {
+  return usage.hasExpiryData === false
+    ? 'Unknown'
+    : formatRemainingDays(usage.expire, referenceDate);
+}
+
+function expiryText(usage) {
+  return usage.hasExpiryData === false ? 'Unknown' : formatExpiry(usage.expire);
+}
+
+function usageRows(usage, referenceDate) {
   if (!usage.hasData) {
     return '<p class="empty">No usage headers were returned by this upstream.</p>';
   }
@@ -31,12 +47,13 @@ function usageRows(usage) {
       <div><dt>Remaining</dt><dd>${formatBytes(usage.remaining)}</dd></div>
       <div><dt>Downloaded</dt><dd>${formatBytes(usage.download)}</dd></div>
       <div><dt>Uploaded</dt><dd>${formatBytes(usage.upload)}</dd></div>
-      <div><dt>Expiry</dt><dd>${escapeHtml(formatExpiry(usage.expire))}</dd></div>
+      <div><dt>Days remaining</dt><dd>${escapeHtml(expiryRemainingText(usage, referenceDate))}</dd></div>
+      <div><dt>Expiry</dt><dd>${escapeHtml(expiryText(usage))}</dd></div>
     </dl>
   `;
 }
 
-function sourceCard(result) {
+function sourceCard(result, referenceDate) {
   const usage = usageFromResult(result);
   const sourceName = escapeHtml(result.source.name);
   const proxyLabel = result.source.proxy === 'xray' ? 'Xray routed' : 'Direct';
@@ -50,17 +67,21 @@ function sourceCard(result) {
         </div>
         <span>${result.count} link${result.count === 1 ? '' : 's'}</span>
       </div>
-      ${usageRows(usage)}
+      ${usageRows(usage, referenceDate)}
     </section>
   `;
 }
 
-function aggregateUsageCard(usage) {
+function aggregateUsageCard(usage, referenceDate) {
   if (!usage?.hasData) {
     return `
       <section class="aggregate-card">
         <h2>Aggregated Remaining</h2>
         <p>No complete usage data was returned for all upstream subscriptions.</p>
+        <dl class="stats compact">
+          <div><dt>Days remaining</dt><dd>${escapeHtml(expiryRemainingText(usage || {}, referenceDate))}</dd></div>
+          <div><dt>Expiry</dt><dd>${escapeHtml(expiryText(usage || {}))}</dd></div>
+        </dl>
       </section>
     `;
   }
@@ -75,6 +96,8 @@ function aggregateUsageCard(usage) {
       <dl class="stats compact">
         <div><dt>Normalized total</dt><dd>${formatBytes(usage.total)}</dd></div>
         <div><dt>Normalized used</dt><dd>${formatBytes(usage.used)}</dd></div>
+        <div><dt>Days remaining</dt><dd>${escapeHtml(expiryRemainingText(usage, referenceDate))}</dd></div>
+        <div><dt>Expiry</dt><dd>${escapeHtml(expiryText(usage))}</dd></div>
       </dl>
     </section>
   `;
@@ -565,10 +588,10 @@ export function renderSubscriptionPage({
       </aside>
 
       <div>
-        ${aggregateUsageCard(aggregateUsage)}
+        ${aggregateUsageCard(aggregateUsage, updatedDate)}
 
         <section class="sources">
-          ${result.results.map(sourceCard).join('')}
+          ${result.results.map((source) => sourceCard(source, updatedDate)).join('')}
         </section>
 
         <section class="links-panel">

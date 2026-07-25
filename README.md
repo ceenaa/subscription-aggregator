@@ -256,6 +256,6 @@ After upgrading from a cookie-based version, enter an API key for every existing
 
 - The VLESS link is used as an Xray outbound. The app creates a local HTTP inbound only so Node can proxy Xray-routed subscription and panel requests.
 - Each subscription source chooses its own route. Set an inbound subscription route to `direct` in `/settings` to verify that source without Xray.
-- Browser requests to `/sub/YOUR_TOKEN` show a local info page with a QR code, source usage, remaining quota, and merged links.
+- Browser requests to `/sub/YOUR_TOKEN` show a local info page with a QR code, source usage, remaining quota, expiry, remaining days, and merged links. Raw subscription output also includes an informational config showing the days left until the earliest upstream expiry.
 - If one upstream panel returns multiple config links for the same subscription, the displayed total quota is divided by the link count, while uploaded/downloaded usage stays as reported by the upstream.
 - Output is a normal V2Ray subscription format: base64 of newline-separated links.

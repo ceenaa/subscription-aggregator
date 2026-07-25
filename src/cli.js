@@ -9,6 +9,7 @@ import {
   withSubscriptionNotice
 } from './subscription.js';
 import { sourcesForToken } from './source-url.js';
+import { summarizeNormalizedUsage } from './usage.js';
 
 async function main() {
   loadDotEnv();
@@ -26,7 +27,9 @@ async function main() {
   try {
     const result = await aggregateSubscriptions(sourcesForToken(config.sources, token), runtime.fetch);
     const namedLinks = linksWithPanelRatioNames(result.results, config.panels);
-    const linksWithNotice = withSubscriptionNotice(namedLinks);
+    const updatedAt = new Date();
+    const usageSummary = summarizeNormalizedUsage(result.results);
+    const linksWithNotice = withSubscriptionNotice(namedLinks, updatedAt, usageSummary);
     process.stdout.write(
       plainOutput
         ? formatPlainSubscription(linksWithNotice)
