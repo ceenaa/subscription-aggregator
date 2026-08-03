@@ -44,7 +44,7 @@ import { buildResponseHeaders } from '../src/response-headers.js';
 import { getRequestOrigin } from '../src/url-context.js';
 import { addClientToPanels, buildAddClientRequest, buildClientSettings } from '../src/panel-client.js';
 import { isAdminAuthorized, isAuthorized } from '../src/auth.js';
-import { requestResponseDirect } from '../src/http-client.js';
+import { parseChunkedBody, requestResponseDirect } from '../src/http-client.js';
 import { createSubscriptionFetcher } from '../src/runtime.js';
 import {
   buildListInboundsRequest,
@@ -339,6 +339,22 @@ test('direct HTTP requests enforce a hard deadline while response keeps streamin
     for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('parses complete chunked response bodies without waiting for socket close', () => {
+  const responseBody = Buffer.from(
+    '4\r\nWiki\r\n5;extension=yes\r\npedia\r\n0\r\nX-Panel: test\r\n\r\n'
+  );
+
+  assert.equal(parseChunkedBody(responseBody.subarray(0, 12)), null);
+  assert.deepEqual(parseChunkedBody(responseBody), {
+    complete: true,
+    body: Buffer.from('Wikipedia')
+  });
+  assert.deepEqual(parseChunkedBody(Buffer.from('1\r\na\r\n0\r\n\r\n')), {
+    complete: true,
+    body: Buffer.from('a')
+  });
 });
 
 test('builds public request origins from proxy headers or public base URL', () => {

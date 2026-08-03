@@ -93,7 +93,7 @@ Create a `.env` file in this project directory. The app loads it automatically b
 ```sh
 PORT=3000
 HOST=127.0.0.1
-REQUEST_TIMEOUT_MS=15000
+REQUEST_TIMEOUT_MS=60000
 SQLITE_DB_PATH=./data/subscription-aggregator.sqlite3
 XRAY_BIN=xray
 

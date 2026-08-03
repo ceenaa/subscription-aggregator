@@ -52,26 +52,57 @@ function resolveRedirect(fromUrl, location) {
   return new URL(location, fromUrl).toString();
 }
 
-function decodeChunkedBody(body) {
+export function parseChunkedBody(body) {
   const chunks = [];
   let offset = 0;
 
-  while (offset < body.length) {
+  while (true) {
     const nextLine = body.indexOf('\r\n', offset);
-    if (nextLine === -1) break;
+    if (nextLine === -1) return null;
 
     const sizeLine = body.subarray(offset, nextLine).toString('ascii');
-    const chunkSize = Number.parseInt(sizeLine.split(';')[0], 16);
-    if (!Number.isFinite(chunkSize)) break;
+    const sizeToken = sizeLine.split(';', 1)[0].trim();
+    if (!/^[0-9a-f]+$/i.test(sizeToken)) {
+      throw new Error(`Invalid HTTP chunk size: ${sizeLine}`);
+    }
 
-    offset = nextLine + 2;
-    if (chunkSize === 0) break;
+    const chunkSize = Number.parseInt(sizeToken, 16);
+    if (!Number.isSafeInteger(chunkSize)) {
+      throw new Error(`HTTP chunk size is too large: ${sizeLine}`);
+    }
 
-    chunks.push(body.subarray(offset, offset + chunkSize));
-    offset += chunkSize + 2;
+    if (chunkSize === 0) {
+      const trailersStart = nextLine + 2;
+      if (body.length < trailersStart + 2) return null;
+      if (body.subarray(trailersStart, trailersStart + 2).equals(Buffer.from('\r\n'))) {
+        return { complete: true, body: Buffer.concat(chunks) };
+      }
+
+      const trailersEnd = body.indexOf('\r\n\r\n', trailersStart);
+      if (trailersEnd === -1) return null;
+
+      return { complete: true, body: Buffer.concat(chunks) };
+    }
+
+    const chunkStart = nextLine + 2;
+    const chunkEnd = chunkStart + chunkSize;
+    if (body.length < chunkEnd + 2) return null;
+    if (!body.subarray(chunkEnd, chunkEnd + 2).equals(Buffer.from('\r\n'))) {
+      throw new Error('HTTP chunk did not end with CRLF');
+    }
+
+    chunks.push(body.subarray(chunkStart, chunkEnd));
+    offset = chunkEnd + 2;
+  }
+}
+
+function decodeChunkedBody(body) {
+  const parsed = parseChunkedBody(body);
+  if (!parsed?.complete) {
+    throw new Error('HTTP response ended before the chunked body was complete');
   }
 
-  return Buffer.concat(chunks);
+  return parsed.body;
 }
 
 function parseRawHttpResponse(buffer) {
@@ -98,7 +129,7 @@ function parseRawHttpResponse(buffer) {
   }
 
   let body = buffer.subarray(headerEnd + 4);
-  if (headers['transfer-encoding']?.toLowerCase().includes('chunked')) {
+  if (body.length > 0 && headers['transfer-encoding']?.toLowerCase().includes('chunked')) {
     body = decodeChunkedBody(body);
   }
 
@@ -109,11 +140,27 @@ function parseRawHttpResponse(buffer) {
   };
 }
 
-function readAllFromSocket(socket, timeoutMs) {
+function readResponseBody(socket, timeoutMs, headers) {
+  const transferEncoding = headers['transfer-encoding']?.toLowerCase() || '';
+  const isChunked = transferEncoding
+    .split(',')
+    .map((value) => value.trim())
+    .includes('chunked');
+  const contentLengthValue = headers['content-length'];
+  const contentLength = contentLengthValue === undefined
+    ? null
+    : Number.parseInt(contentLengthValue, 10);
+
+  if (!isChunked && contentLength === 0) return Promise.resolve(Buffer.alloc(0));
+  if (!isChunked && contentLength !== null && (!Number.isSafeInteger(contentLength) || contentLength < 0)) {
+    return Promise.reject(new Error(`Invalid HTTP Content-Length: ${contentLengthValue}`));
+  }
+
   return new Promise((resolve, reject) => {
     const chunks = [];
     let totalLength = 0;
     let deadline = null;
+    let settled = false;
 
     const cleanup = () => {
       if (deadline) clearTimeout(deadline);
@@ -123,25 +170,62 @@ function readAllFromSocket(socket, timeoutMs) {
       socket.off('timeout', onTimeout);
     };
 
-    const onData = (chunk) => {
-      chunks.push(chunk);
-      totalLength += chunk.length;
-    };
-
-    const onEnd = () => {
+    const finishResolve = (body) => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      resolve(Buffer.concat(chunks, totalLength));
+      resolve(body);
     };
 
-    const onError = (error) => {
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(error);
     };
 
+    const onData = (chunk) => {
+      chunks.push(chunk);
+      totalLength += chunk.length;
+
+      if (isChunked) {
+        try {
+          const parsed = parseChunkedBody(Buffer.concat(chunks, totalLength));
+          if (parsed?.complete) finishResolve(parsed.body);
+        } catch (error) {
+          finishReject(error);
+        }
+        return;
+      }
+
+      if (contentLength !== null && totalLength >= contentLength) {
+        finishResolve(Buffer.concat(chunks, totalLength).subarray(0, contentLength));
+      }
+    };
+
+    const onEnd = () => {
+      if (isChunked) {
+        finishReject(new Error('HTTP response ended before the chunked body was complete'));
+        return;
+      }
+
+      if (contentLength !== null && totalLength < contentLength) {
+        finishReject(
+          new Error(`HTTP response ended before Content-Length (${contentLength}) was received`)
+        );
+        return;
+      }
+
+      finishResolve(Buffer.concat(chunks, totalLength));
+    };
+
+    const onError = (error) => {
+      finishReject(error);
+    };
+
     const onTimeout = () => {
-      cleanup();
       socket.destroy();
-      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+      finishReject(new Error(`Request timed out after ${timeoutMs}ms`));
     };
 
     deadline = setTimeout(onTimeout, timeoutMs);
@@ -150,6 +234,7 @@ function readAllFromSocket(socket, timeoutMs) {
     socket.once('end', onEnd);
     socket.once('error', onError);
     socket.once('timeout', onTimeout);
+    socket.resume();
   });
 }
 
@@ -176,7 +261,10 @@ function readHttpHeader(socket, timeoutMs) {
 
       cleanup();
       const rest = buffer.subarray(headerEnd + 4);
-      if (rest.length > 0) socket.unshift(rest);
+      if (rest.length > 0) {
+        socket.pause();
+        socket.unshift(rest);
+      }
       resolve(buffer.subarray(0, headerEnd + 4));
     };
 
@@ -294,7 +382,7 @@ function sendHttpsRequestOverSocket(socket, url, timeoutMs, options = {}) {
     const onSecureConnect = async () => {
       tlsSocket.off('secureConnect', onSecureConnect);
       try {
-        const { body, headers } = requestHeaders(url, options);
+        const { body: requestBody, headers } = requestHeaders(url, options);
         tlsSocket.write(
           [
             `${options.method || 'GET'} ${requestPath(url)} HTTP/1.1`,
@@ -303,10 +391,11 @@ function sendHttpsRequestOverSocket(socket, url, timeoutMs, options = {}) {
             ''
           ].join('\r\n')
         );
-        if (body) tlsSocket.write(body);
+        if (requestBody) tlsSocket.write(requestBody);
 
-        const responseBuffer = await readAllFromSocket(tlsSocket, timeoutMs);
-        finishResolve(parseRawHttpResponse(responseBuffer));
+        const responseHeader = parseRawHttpResponse(await readHttpHeader(tlsSocket, timeoutMs));
+        const responseBody = await readResponseBody(tlsSocket, timeoutMs, responseHeader.headers);
+        finishResolve({ ...responseHeader, body: responseBody });
       } catch (error) {
         finishReject(error);
       }
