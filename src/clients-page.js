@@ -338,6 +338,9 @@ export function renderClientsPage({
   error = '',
   message = '',
   updateResults = [],
+  pagination = null,
+  snapshotNotice = '',
+  loading = false,
   updatedAt = new Date()
 }) {
   const updatedDate = updatedAt instanceof Date ? updatedAt : new Date(updatedAt);
@@ -1098,20 +1101,21 @@ export function renderClientsPage({
   </style>
 </head>
 <body>
-  <main>
+  <main data-clients-page aria-busy="${loading}">
     <header>
       <div>
         <h1>Created Configurations</h1>
-        <p>${clients.length} matched clients · updated ${escapeHtml(updatedLabel)}</p>
+        <p>${loading ? 'Loading panel data…' : `${clients.length} matched clients · updated ${escapeHtml(updatedLabel)}`}</p>
       </div>
       <nav aria-label="Pages">
         <a href="/inbounds">Create</a>
         <a href="/settings">Settings</a>
-        <a href="/clients">Refresh</a>
+        <a href="/clients?refresh=1" data-clients-nav>Refresh</a>
       </nav>
     </header>
 
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    ${snapshotNotice ? `<div class="message" role="status">${escapeHtml(snapshotNotice)}</div>` : ''}
     ${message ? `<div class="message">${escapeHtml(message)}${updateResultList(updateResults)}</div>` : ''}
 
     <ul class="summary">
@@ -1119,17 +1123,18 @@ export function renderClientsPage({
     </ul>
 
     <div class="toolbar">
-      <form class="search" data-client-search-form>
+      <form class="search" method="get" action="/clients" data-client-search-form ${pagination ? 'data-server-search' : ''}>
         <input
           type="search"
           name="q"
+          value="${escapeHtml(pagination?.query || '')}"
           data-client-search-input
           placeholder="Email or subscription ID"
           aria-label="Search by email or subscription ID"
         >
         <button type="button" data-client-search-clear>Clear</button>
       </form>
-      <span class="search-count" data-client-search-count>${clients.length} shown</span>
+      <span class="search-count" data-client-search-count role="status">${pagination ? `${pagination.start}–${pagination.end} of ${pagination.filtered} shown` : `${clients.length} shown`}</span>
     </div>
 
     <div class="table-wrap">
@@ -1146,10 +1151,16 @@ export function renderClientsPage({
           </tr>
         </thead>
         <tbody>
-          ${clientRows(clients)}
+          ${loading ? '<tr><td colspan="7" class="empty" data-clients-loading>Loading clients…</td></tr>' : clientRows(pagination?.items || clients)}
         </tbody>
       </table>
     </div>
+    ${loading ? '<noscript><p><a href="/clients?refresh=1">Load clients</a></p></noscript>' : ''}
+    ${pagination ? `<nav class="toolbar" aria-label="Client pages">
+      ${pagination.previousUrl ? `<a href="${escapeHtml(pagination.previousUrl)}" data-clients-nav>← Previous</a>` : '<span></span>'}
+      <span>Page ${pagination.page} of ${pagination.pages} · ${pagination.pageSize} per page</span>
+      ${pagination.nextUrl ? `<a href="${escapeHtml(pagination.nextUrl)}" data-clients-nav>Next →</a>` : '<span></span>'}
+    </nav>` : ''}
   </main>
   <script src="/assets/clients.js" defer></script>
 </body>

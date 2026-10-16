@@ -22,31 +22,32 @@ export const COPY_SCRIPT = `(() => {
     if (!copied) throw new Error('copy command failed');
   }
 
-  for (const box of document.querySelectorAll('[data-copy-text]')) {
+  async function runCopy(box) {
     const hint = box.parentElement?.querySelector('[data-copy-hint]');
     const originalHint = hint?.textContent || '';
-    const run = async () => {
-      try {
-        await copyText(box.dataset.copyText || box.textContent || '');
-        box.dataset.copied = 'true';
-        if (hint) hint.textContent = 'Copied';
-        window.setTimeout(() => {
-          delete box.dataset.copied;
-          if (hint) hint.textContent = originalHint;
-        }, 1800);
-      } catch {
-        if (hint) hint.textContent = 'Copy failed';
-      }
-    };
-
-    box.addEventListener('click', run);
-    box.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        run();
-      }
-    });
+    try {
+      await copyText(box.dataset.copyText || box.textContent || '');
+      box.dataset.copied = 'true';
+      if (hint) hint.textContent = 'Copied';
+      window.setTimeout(() => {
+        delete box.dataset.copied;
+        if (hint) hint.textContent = originalHint;
+      }, 1800);
+    } catch {
+      if (hint) hint.textContent = 'Copy failed';
+    }
   }
+  document.addEventListener('click', event => {
+    const box = event.target.closest('[data-copy-text]');
+    if (box) runCopy(box);
+  });
+  document.addEventListener('keydown', event => {
+    const box = event.target.closest('[data-copy-text]');
+    if (box && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      runCopy(box);
+    }
+  });
 })();`;
 
 export const INBOUNDS_SCRIPT = `${COPY_SCRIPT}
@@ -71,6 +72,53 @@ export const INBOUNDS_SCRIPT = `${COPY_SCRIPT}
 
 export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
 (() => {
+  let navigationController;
+  let searchTimer;
+
+  async function navigateClients(target, focusSearch = false, push = true) {
+    navigationController?.abort();
+    const controller = new AbortController();
+    navigationController = controller;
+    const currentInput = document.querySelector('[data-client-search-input]');
+    const selection = currentInput?.selectionStart;
+    const count = document.querySelector('[data-client-search-count]');
+    if (count) count.textContent = 'Loading…';
+    const destination = new URL(target, window.location.href);
+    destination.username = '';
+    destination.password = '';
+    try {
+      const response = await fetch(destination, { signal: controller.signal });
+      const documentResult = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const next = documentResult.querySelector('[data-clients-page]');
+      if (!response.ok || !next) throw new Error('Could not load clients. Please retry.');
+      if (controller.signal.aborted) return;
+      document.querySelector('[data-clients-page]').replaceWith(next);
+      destination.searchParams.delete('refresh');
+      if (push) window.history.pushState({}, '', destination);
+      initializeClients();
+      if (focusSearch) {
+        const input = document.querySelector('[data-client-search-input]');
+        input?.focus();
+        if (selection !== null && selection !== undefined) input?.setSelectionRange(selection, selection);
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError' && !controller.signal.aborted && count) count.textContent = error.message;
+    }
+  }
+
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[data-clients-nav]');
+    if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    clearTimeout(searchTimer);
+    navigateClients(link.href);
+  });
+  window.addEventListener('popstate', () => navigateClients(window.location.href, false, false));
+
+  function initializeClients() {
+  if (document.querySelector('[data-clients-loading]')) {
+    setTimeout(() => navigateClients(window.location.href, false, false), 1000);
+  }
   const form = document.querySelector('[data-client-search-form]');
   const input = document.querySelector('[data-client-search-input]');
   const clearButton = document.querySelector('[data-client-search-clear]');
@@ -258,6 +306,7 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
 
   function applyFilter() {
     const query = (input?.value || '').trim().toLowerCase();
+    if (form?.hasAttribute('data-server-search')) return;
     let visible = 0;
 
     for (const row of rows) {
@@ -277,18 +326,37 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     }
   }
 
+  function searchClients() {
+    if (!form?.hasAttribute('data-server-search')) return applyFilter();
+    const target = new URL(window.location.href);
+    target.pathname = '/clients';
+    target.searchParams.delete('page');
+    target.searchParams.delete('refresh');
+    if (input.value.trim()) target.searchParams.set('q', input.value.trim());
+    else target.searchParams.delete('q');
+    navigateClients(target, true);
+  }
+
   form?.addEventListener('submit', (event) => {
     event.preventDefault();
+    clearTimeout(searchTimer);
+    searchClients();
   });
 
   clearButton?.addEventListener('click', () => {
     if (!input) return;
     input.value = '';
     input.focus();
-    applyFilter();
+    clearTimeout(searchTimer);
+    searchClients();
   });
 
-  input?.addEventListener('input', applyFilter);
+  input?.addEventListener('input', () => {
+    if (!form?.hasAttribute('data-server-search')) return applyFilter();
+    navigationController?.abort();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(searchClients, 250);
+  });
 
   for (const button of document.querySelectorAll('[data-edit-toggle]')) {
     button.setAttribute('aria-expanded', 'false');
@@ -381,4 +449,6 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
 
   window.setTimeout(loadAutoSourceUsage, 0);
   applyFilter();
+  }
+  initializeClients();
 })();`;

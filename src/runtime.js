@@ -2,7 +2,8 @@ import {
   fetchResponseDirect,
   fetchResponseViaHttpProxy,
   requestResponseDirect,
-  requestResponseViaHttpProxy
+  requestResponseViaHttpProxy,
+  closeProxyConnections
 } from './http-client.js';
 import { startXrayHttpProxy } from './xray.js';
 
@@ -62,13 +63,13 @@ export async function createSubscriptionFetcher(config, dependencies = {}) {
         return requestViaProxy(target.url, {
           ...options,
           proxyPort: proxy.port,
-          timeoutMs: config.requestTimeoutMs
+          timeoutMs: Math.min(options?.timeoutMs ?? config.requestTimeoutMs, config.requestTimeoutMs)
         });
       }
 
       return requestDirect(target.url, {
         ...options,
-        timeoutMs: config.requestTimeoutMs
+        timeoutMs: Math.min(options?.timeoutMs ?? config.requestTimeoutMs, config.requestTimeoutMs)
       });
     },
 
@@ -76,6 +77,7 @@ export async function createSubscriptionFetcher(config, dependencies = {}) {
       const proxy = xrayProxy || (xrayProxyPromise ? await xrayProxyPromise.catch(() => null) : null);
       xrayProxy = null;
       xrayProxyPromise = null;
+      if (proxy) closeProxyConnections(proxy.port);
       await proxy?.stop();
     }
   };

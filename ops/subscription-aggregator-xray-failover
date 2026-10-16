@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="${APP_DIR:-/root/subscription-aggregator}"
+ENV_FILE="${ENV_FILE:-$APP_DIR/.env}"
+ROUTES_FILE="${ROUTES_FILE:-/root/.config/subscription-aggregator/xray-failover-routes.env}"
+STATE_DIR="${STATE_DIR:-/var/lib/subscription-aggregator/failover}"
+SERVICE_NAME="${SERVICE_NAME:-subscription-aggregator.service}"
+FAILURE_THRESHOLD="${FAILURE_THRESHOLD:-2}"
+PROXY_PORT_BASE="${PROXY_PORT_BASE:-28100}"
+
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/failover.lock"
+flock -n 9 || exit 0
+cd "$APP_DIR"
+
+log() {
+  logger -t subscription-aggregator-failover -- "$*"
+  printf '%s\n' "$*"
+}
+
+[[ -r "$ENV_FILE" ]] || { log "Cannot read $ENV_FILE"; exit 1; }
+[[ -r "$ROUTES_FILE" ]] || { log "Cannot read backup route file"; exit 1; }
+
+set -a
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+# shellcheck disable=SC1090
+. "$ROUTES_FILE"
+set +a
+
+dashboard_healthy() {
+  # Check liveness independently from one small authenticated upstream read.
+  # Rendering the complete dashboard makes slow downloads look like outages.
+  curl -kfsS --max-time 5 -o /dev/null 'https://127.0.0.1:2082/health' || return 1
+  node --input-type=module <<'NODE'
+import { DatabaseSync } from 'node:sqlite';
+import { createSubscriptionFetcher } from './src/runtime.js';
+const db = new DatabaseSync(process.env.SQLITE_DB_PATH || '/var/lib/subs/subscription-aggregator.sqlite3', { readOnly: true });
+const panel = db.prepare("select name, add_client_url as url, api_key as apiKey, proxy from panels where enabled = 1 and proxy = 'xray' order by id limit 1").get();
+db.close();
+if (panel) {
+  const runtime = await createSubscriptionFetcher({ xrayBin: process.env.XRAY_BIN || 'xray', xrayOutboundLink: process.env.XRAY_OUTBOUND_LINK, requestTimeoutMs: 10000 });
+  try {
+    const url = panel.url.replace(/\/api\/(?:inbounds\/addClient|clients\/add)\/?$/, '/api/clients/list/paged?page=1&pageSize=1');
+    const response = await runtime.request({ name: panel.name, proxy: panel.proxy, url }, { method: 'GET', headers: { Authorization: `Bearer ${panel.apiKey}` } });
+    const payload = JSON.parse(response.body);
+    if (payload.success !== true || !Array.isArray(payload.obj?.items)) process.exitCode = 1;
+  } catch { process.exitCode = 1; }
+  finally { await runtime.close(); }
+}
+NODE
+}
+
+failure_file="$STATE_DIR/consecutive-failures"
+if dashboard_healthy; then
+  printf '0\n' >"$failure_file"
+  exit 0
+fi
+
+failures=0
+[[ -f "$failure_file" ]] && read -r failures <"$failure_file" || true
+failures=$((failures + 1))
+printf '%s\n' "$failures" >"$failure_file"
+if (( failures < FAILURE_THRESHOLD )); then
+  log "Dashboard health check failed ($failures/$FAILURE_THRESHOLD); waiting before failover"
+  exit 0
+fi
+
+probe_url="$(sqlite3 /var/lib/subs/subscription-aggregator.sqlite3 "select add_client_url from panels where enabled = 1 and proxy = 'xray' order by id limit 1;" || true)"
+[[ -n "$probe_url" ]] || { log "No enabled Xray panel available for route probe"; exit 1; }
+probe_url="$(printf '%s' "$probe_url" | sed -E 's@/api/(inbounds/addClient|clients/add)/?$@/api/clients/list/paged?page=1\&pageSize=1@')"
+probe_key="$(sqlite3 /var/lib/subs/subscription-aggregator.sqlite3 "select api_key from panels where enabled = 1 and proxy = 'xray' order by id limit 1;")"
+
+
+probe_route() {
+  local candidate="$1" slot="$2" route_dir config log_file pid status proxy_port
+  proxy_port=$((PROXY_PORT_BASE + slot))
+  route_dir="$(mktemp -d /tmp/subscription-xray-failover.XXXXXX)"
+  config="$route_dir/config.json"
+  log_file="$route_dir/xray.log"
+  TEST_LINK="$candidate" TEST_PORT="$proxy_port" TEST_CONFIG="$config" \
+    node --input-type=module -e 'import {writeFileSync} from "node:fs"; import {buildXrayConfigFromVlessLink} from "./src/xray.js"; writeFileSync(process.env.TEST_CONFIG, JSON.stringify(buildXrayConfigFromVlessLink(process.env.TEST_LINK, Number(process.env.TEST_PORT))));' \
+    >/dev/null 2>&1 || { rm -rf "$route_dir"; return 1; }
+  "$APP_DIR/xray/xray" run -config "$config" >"$log_file" 2>&1 &
+  pid=$!
+  sleep 3
+  status="$(printf 'header = "Authorization: Bearer %s"\n' "$probe_key" | \
+    curl -ksS --compressed --config - --proxy "http://127.0.0.1:$proxy_port" --connect-timeout 10 --max-time 15 \
+    -o "$route_dir/probe.json" -w '%{http_code}' "$probe_url" || true)"
+  local valid=false
+  if [[ "$status" == '200' ]] && node --input-type=module -e 'import {readFileSync} from "node:fs"; try { const p=JSON.parse(readFileSync(process.argv[1],"utf8")); process.exit(p.success===true && Array.isArray(p.obj?.items) ? 0 : 1); } catch { process.exit(1); }' "$route_dir/probe.json"; then
+    valid=true
+  fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -rf "$route_dir"
+  [[ "$valid" == true ]]
+}
+
+set_route() {
+  local candidate="$1"
+  CANDIDATE="$candidate" ENV_PATH="$ENV_FILE" node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const path=process.env.ENV_PATH; const before=readFileSync(path,"utf8"); const after=before.replace(/^XRAY_OUTBOUND_LINK=.*$/m, `XRAY_OUTBOUND_LINK="${process.env.CANDIDATE}"`); if (after === before) throw new Error("XRAY_OUTBOUND_LINK is missing"); writeFileSync(path, after);'
+}
+
+backup_env="$STATE_DIR/.env.before-failover"
+cp "$ENV_FILE" "$backup_env"
+route_changed=false
+
+routes=("${XRAY_FAILOVER_BACKUP_LINK_1:-}" "${XRAY_FAILOVER_BACKUP_LINK_2:-}" "${XRAY_FAILOVER_BACKUP_LINK_3:-}")
+for index in "${!routes[@]}"; do
+  candidate="${routes[$index]}"
+  [[ -n "$candidate" ]] || continue
+  [[ "$candidate" == "$XRAY_OUTBOUND_LINK" ]] && continue
+  if ! probe_route "$candidate" "$((index + 1))"; then
+    log "Backup route $((index + 1)) did not pass the transport probe"
+    continue
+  fi
+  set_route "$candidate"
+  route_changed=true
+  systemctl restart "$SERVICE_NAME"
+  for _ in {1..8}; do
+    sleep 2
+    if dashboard_healthy; then
+      printf '0\n' >"$failure_file"
+      log "Switched to backup Xray route $((index + 1)); dashboard recovered"
+      exit 0
+    fi
+  done
+  log "Backup route $((index + 1)) connected but did not restore the dashboard"
+done
+
+if [[ "$route_changed" == true ]]; then
+  cp "$backup_env" "$ENV_FILE"
+  systemctl restart "$SERVICE_NAME"
+  log "All backup routes failed; restored the previous Xray route"
+else
+  log "All backup routes failed transport checks; left the current route unchanged"
+fi
+exit 1

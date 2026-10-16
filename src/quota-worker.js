@@ -316,10 +316,10 @@ export function evaluateQuotaPair(first, second) {
   return evaluateQuotaGroup([first, second]);
 }
 
-async function requestPanelJson(runtime, panel, request) {
+async function requestPanelJson(runtime, panel, request, options = {}) {
   const response = await runtime.request(
     { name: panel.name, proxy: panel.proxy, url: request.url },
-    { method: request.method, headers: request.headers, body: request.body }
+    { ...options, method: request.method, headers: request.headers, body: request.body }
   );
 
   return parseJsonObject(response.body, panel.name);
@@ -361,9 +361,9 @@ async function fetchConfiguredPanelInbounds(runtime, panels) {
   );
 }
 
-export async function fetchPanelOnlineClients(runtime, panel) {
+export async function fetchPanelOnlineClients(runtime, panel, options = {}) {
   const request = buildOnlineClientsRequest(panel);
-  const payload = await requestPanelJson(runtime, panel, request);
+  const payload = await requestPanelJson(runtime, panel, request, options);
   return Array.isArray(payload.obj) ? payload.obj.map(String) : [];
 }
 

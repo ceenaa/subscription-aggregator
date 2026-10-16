@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Subscription Aggregator Xray failover health check every three minutes
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*-*-* *:0/3:00
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

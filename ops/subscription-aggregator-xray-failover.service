@@ -1,0 +1,9 @@
+[Unit]
+Description=Fail over Subscription Aggregator Xray route when the dashboard is unhealthy
+After=network-online.target subscription-aggregator.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/subscription-aggregator-xray-failover
+TimeoutStartSec=300

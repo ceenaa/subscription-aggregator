@@ -108,6 +108,11 @@ export function loadConfig(env = process.env, options = {}) {
     worker: {
       concurrency: readOptionalIntegerEnv(env, 'WORKER_CONCURRENCY', 5)
     },
+    clients: {
+      cacheTtlMs: readOptionalIntegerEnv(env, 'CLIENTS_CACHE_TTL_MS', 20000),
+      maxStaleMs: readOptionalIntegerEnv(env, 'CLIENTS_MAX_STALE_MS', 120000),
+      pageSize: Math.min(100, readOptionalIntegerEnv(env, 'CLIENTS_PAGE_SIZE', 50))
+    },
     admin: {
       username: env.ADMIN_USERNAME || '',
       password: env.ADMIN_PASSWORD || ''

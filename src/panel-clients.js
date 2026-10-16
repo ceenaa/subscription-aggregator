@@ -8,6 +8,7 @@ import {
 import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 import { aggregateSubscriptions } from './subscription.js';
 import { sourcesForToken } from './source-url.js';
+import { fetchPanelClientSnapshot } from './panel-client-snapshot.js';
 import {
   deduplicateUsageEntries,
   formatExpiry,
@@ -205,13 +206,13 @@ function panelStateFromInbounds(panel, inbounds) {
   };
 }
 
-async function fetchConfiguredPanelStates(runtime, panels) {
+async function fetchConfiguredPanelStates(runtime, panels, options = {}) {
   const inboundsByPanel = new Map();
 
   for (const panel of panels) {
     const key = panelListKey(panel);
     if (!inboundsByPanel.has(key)) {
-      inboundsByPanel.set(key, fetchPanelInbounds(runtime, panel));
+      inboundsByPanel.set(key, options.clientApi ? fetchPanelClientSnapshot(runtime, panel) : fetchPanelInbounds(runtime, panel));
     }
   }
 
@@ -220,9 +221,9 @@ async function fetchConfiguredPanelStates(runtime, panels) {
   );
 }
 
-async function loadPanelOnlineState(runtime, panel) {
+async function loadPanelOnlineState(runtime, panel, timeoutMs) {
   try {
-    const onlineClients = await fetchPanelOnlineClients(runtime, panel);
+    const onlineClients = await fetchPanelOnlineClients(runtime, panel, { timeoutMs });
     return {
       onlineCount: onlineClients.length,
       onlineError: ''
@@ -416,11 +417,11 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
   }
 
   const [panelStates, onlineStates] = await Promise.all([
-    fetchConfiguredPanelStates(runtime, configuredPanels),
+    fetchConfiguredPanelStates(runtime, configuredPanels, options),
     Promise.all(
       groupByPanel(configuredPanels).map(async (group) => [
         group.key,
-        await loadPanelOnlineState(runtime, group.items[0])
+        await loadPanelOnlineState(runtime, group.items[0], options.onlineTimeoutMs)
       ])
     )
   ]);

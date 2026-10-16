@@ -38,6 +38,9 @@ import {
   updatePanel
 } from './config-store.js';
 import { renderSettingsPage } from './settings-page.js';
+import { sendCompressed } from './compressed-response.js';
+import { createSnapshotCache } from './snapshot-cache.js';
+import { clientsPagination } from './clients-pagination.js';
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 const PROJECT_ROOT = path.dirname(path.dirname(MODULE_PATH));
@@ -66,19 +69,11 @@ function sendText(config, request, response, statusCode, body, headers = {}) {
 }
 
 function sendHtml(config, request, response, statusCode, body, headers = {}) {
-  response.writeHead(
-    statusCode,
-    buildResponseHeaders(config, request, 'text/html; charset=utf-8', headers)
-  );
-  response.end(body);
+  sendCompressed(config, request, response, statusCode, body, 'text/html; charset=utf-8', headers);
 }
 
 function sendJavaScript(config, request, response, statusCode, body, headers = {}) {
-  response.writeHead(
-    statusCode,
-    buildResponseHeaders(config, request, 'application/javascript; charset=utf-8', headers)
-  );
-  response.end(body);
+  sendCompressed(config, request, response, statusCode, body, 'application/javascript; charset=utf-8', headers);
 }
 
 function sendBinary(config, request, response, statusCode, body, contentType, headers = {}) {
@@ -90,11 +85,7 @@ function sendBinary(config, request, response, statusCode, body, contentType, he
 }
 
 function sendJson(config, request, response, statusCode, body, headers = {}) {
-  response.writeHead(
-    statusCode,
-    buildResponseHeaders(config, request, 'application/json; charset=utf-8', headers)
-  );
-  response.end(`${JSON.stringify(body, null, 2)}\n`);
+  sendCompressed(config, request, response, statusCode, `${JSON.stringify(body)}\n`, 'application/json; charset=utf-8', headers);
 }
 
 function wantsHtml(request, url) {
@@ -286,10 +277,16 @@ async function loadClientsView(config, runtime, request, options = {}) {
   const includeSubscriptionUsage = options.includeSubscriptionUsage === true;
   const showPanelUsage = includeSubscriptionUsage ? false : options.showPanelUsage !== false;
   const autoLoadSubscriptionUsage = options.autoLoadSubscriptionUsage === true;
-  const result = await listCreatedPanelClients(runtime, config.panels, {
+  const snapshot = !includeSubscriptionUsage && options.snapshotCache
+    ? await options.snapshotCache.get(JSON.stringify(config.panels), { force: options.forceRefresh, wait: false })
+    : null;
+  if (snapshot?.loading) return { panels: [], clients: [], loading: true };
+  const result = snapshot?.data || await listCreatedPanelClients(runtime, config.panels, {
     sources: config.sources,
     concurrency: config.worker.concurrency,
-    includeSubscriptionUsage
+    includeSubscriptionUsage,
+    clientApi: true,
+    onlineTimeoutMs: 2000
   });
   const clients = result.clients.map((client) => ({
     ...client,
@@ -301,7 +298,11 @@ async function loadClientsView(config, runtime, request, options = {}) {
 
   return {
     panels: result.panels,
-    clients
+    clients,
+    updatedAt: snapshot ? new Date(snapshot.updatedAt) : new Date(),
+    snapshotNotice: snapshot?.refreshError
+      ? `Showing the last successful snapshot. Refresh failed: ${snapshot.refreshError}`
+      : snapshot?.stale ? 'Updating panel data in the background…' : ''
   };
 }
 
@@ -320,8 +321,16 @@ async function createNodeServer(config, handler) {
   return https.createServer(tlsOptions, handler);
 }
 
-export async function createServer(config = loadConfig()) {
+export async function createServer(config = loadConfig(), dependencies = {}) {
   let runtime;
+  let lastClientsAccess = Date.now();
+  const snapshotCache = createSnapshotCache({
+    load: () => listCreatedPanelClients(runtime, config.panels, {
+      includeSubscriptionUsage: false, clientApi: true, onlineTimeoutMs: 2000
+    }),
+    ttlMs: config.clients?.cacheTtlMs,
+    maxStaleMs: config.clients?.maxStaleMs
+  });
 
   const server = await createNodeServer(config, async (request, response) => {
     try {
@@ -411,9 +420,12 @@ export async function createServer(config = loadConfig()) {
         }
 
         try {
+          snapshotCache.invalidate();
           await handleSettingsPost(config, request, response, url.pathname);
         } catch (error) {
           renderSettings(config, request, response, 400, { error: error.message });
+        } finally {
+          snapshotCache.invalidate();
         }
         return;
       }
@@ -461,7 +473,13 @@ export async function createServer(config = loadConfig()) {
         }
 
         const values = formValuesFromBody(await readRequestBody(request));
-        const results = await addClientToPanels(runtime, config.panels, values);
+        snapshotCache.invalidate();
+        let results;
+        try {
+          results = await addClientToPanels(runtime, config.panels, values);
+        } finally {
+          snapshotCache.invalidate();
+        }
         sendHtml(
           config,
           request,
@@ -545,10 +563,13 @@ export async function createServer(config = loadConfig()) {
 
         let updateResult = null;
         if (isClientEdit) {
+          snapshotCache.invalidate();
           try {
             const values = clientEditValuesFromBody(await readRequestBody(request));
             updateResult = await updateCreatedPanelClient(runtime, config.panels, values);
+            snapshotCache.invalidate();
           } catch (error) {
+            snapshotCache.invalidate();
             let view = { panels: config.panels, clients: [] };
             try {
               view = await loadClientsView(config, runtime, request);
@@ -573,10 +594,13 @@ export async function createServer(config = loadConfig()) {
 
         let result;
         try {
+          lastClientsAccess = Date.now();
           const usageMode = url.searchParams.get('usage');
           result = await loadClientsView(config, runtime, request, {
             includeSubscriptionUsage: usageMode === 'subscription',
-            showPanelUsage: usageMode !== 'subscription'
+            showPanelUsage: usageMode !== 'subscription',
+            snapshotCache,
+            forceRefresh: url.searchParams.get('refresh') === '1'
           });
         } catch (error) {
           sendHtml(
@@ -598,9 +622,10 @@ export async function createServer(config = loadConfig()) {
           response,
           200,
           renderClientsPage({
+            ...result,
             panels: result.panels,
             clients: result.clients,
-            updatedAt: new Date(),
+            pagination: clientsPagination(result.clients, url, config.clients?.pageSize),
             message: updateResult ? `Updated ${updateResult.subId}` : '',
             updateResults: updateResult?.results || []
           })
@@ -685,11 +710,20 @@ export async function createServer(config = loadConfig()) {
     }
   });
 
-  runtime = await createSubscriptionFetcher(config);
+  runtime = dependencies.runtime || await createSubscriptionFetcher(config);
+  const warmSnapshot = () => {
+    if (panelsConfigured(config) && Date.now() - lastClientsAccess < 5 * 60 * 1000) {
+      snapshotCache.get(JSON.stringify(config.panels), { force: true }).catch(() => {});
+    }
+  };
+  warmSnapshot();
+  const refreshTimer = setInterval(warmSnapshot, config.clients?.cacheTtlMs || 20000);
+  refreshTimer.unref();
 
   return {
     server,
     async close() {
+      clearInterval(refreshTimer);
       await new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
