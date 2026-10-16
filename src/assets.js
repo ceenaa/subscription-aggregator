@@ -447,8 +447,28 @@ export const CLIENTS_SCRIPT = `${COPY_SCRIPT}
     }
   }
 
+  for (const edit of document.querySelectorAll('form[action="/clients/edit"]')) {
+    edit.addEventListener('submit', event => {
+      if (event.defaultPrevented) return;
+      const button = edit.querySelector('button[type="submit"]');
+      if (!button) return;
+      button.dataset.savingText = button.textContent;
+      button.disabled = true;
+      if (button.textContent.trim()) button.textContent = 'Saving…';
+      edit.setAttribute('aria-busy', 'true');
+    });
+  }
+
   window.setTimeout(loadAutoSourceUsage, 0);
   applyFilter();
   }
   initializeClients();
+  window.addEventListener('pageshow', () => {
+    for (const button of document.querySelectorAll('[data-saving-text]')) {
+      if (button.dataset.savingText.trim()) button.textContent = button.dataset.savingText;
+      button.disabled = false;
+      delete button.dataset.savingText;
+      button.closest('form')?.removeAttribute('aria-busy');
+    }
+  });
 })();`;

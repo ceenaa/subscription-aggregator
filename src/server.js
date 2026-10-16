@@ -24,6 +24,7 @@ import { addClientToPanels, defaultInboundFormValues } from './panel-client.js';
 import { renderInboundsPage } from './inbounds-page.js';
 import {
   listCreatedPanelClients,
+  applyClientUpdateToSnapshot,
   loadCreatedPanelClientSubscriptionUsage,
   updateCreatedPanelClient
 } from './panel-clients.js';
@@ -592,14 +593,20 @@ export async function createServer(config = loadConfig(), dependencies = {}) {
         }
 
         if (isClientEdit) {
-          snapshotCache.invalidate();
+          const snapshotKey = JSON.stringify(config.panels);
+          const previousSnapshot = snapshotCache.peek(snapshotKey);
+          snapshotCache.invalidate({ keepValue: true });
           let returnTo = clientsReturnUrl();
           let notice;
           try {
             const body = await readRequestBody(request);
             returnTo = clientsReturnUrl(new URLSearchParams(body).get('returnTo'));
             const values = clientEditValuesFromBody(body);
-            const updateResult = await updateCreatedPanelClient(runtime, config.panels, values);
+            const cachedClient = previousSnapshot?.clients.find(client => client.subId === values.subId);
+            const updateResult = await updateCreatedPanelClient(runtime, config.panels, values, {
+              fastRead: true, targets: cachedClient?.editTargets
+            });
+            snapshotCache.update(snapshotKey, snapshot => applyClientUpdateToSnapshot(snapshot, updateResult.client));
             notice = {
               message: updateResult.ok ? `Updated ${updateResult.subId}` : `Some panel updates failed for ${updateResult.subId}`,
               updateResults: updateResult.results
@@ -607,7 +614,7 @@ export async function createServer(config = loadConfig(), dependencies = {}) {
           } catch (error) {
             notice = { error: error.message };
           } finally {
-            snapshotCache.invalidate();
+            snapshotCache.invalidate({ keepValue: true });
           }
           returnTo.searchParams.set('notice', rememberEditNotice(notice));
           sendRedirect(config, request, response, `${returnTo.pathname}${returnTo.search}`);

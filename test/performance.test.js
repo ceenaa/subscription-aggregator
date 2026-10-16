@@ -271,14 +271,16 @@ test('cold clients page responds immediately, then searches and paginates the au
   } finally { blocked.resolve(); await app.close(); }
 });
 
-test('client edits redirect to a GET list, retain context and notices through loading, and never resubmit on reload', async () => {
+test('client edits redirect to a patched list without waiting for a full refresh and never resubmit on reload', async () => {
   const { createServer } = await import('../src/server.js');
   const refresh = deferred();
   let mutations = 0;
   let failMutation = false;
   const records = ['a', 'b', 'c'].map(suffix => ({
     id: `uuid-${suffix}`, email: `changed-${suffix}`, subId: `sub-${suffix}`,
-    enable: true, totalGB: 1000, inboundIds: [4], traffic: { up: 10, down: 20, total: 1000 }
+    enable: true, totalGB: 1000, inboundIds: [4], traffic: { up: 10, down: 20, total: 1000 },
+    expiryTime: 0, limitIp: 0, tgId: 0, reset: 0, comment: '', security: 'auto',
+    flow: '', password: '', auth: '', reverse: null, group: ''
   }));
   const runtime = {
     async request(target, options) {
@@ -289,6 +291,13 @@ test('client edits redirect to a GET list, retain context and notices through lo
         const update = JSON.parse(options.body);
         Object.assign(records.find(record => record.email === update.email), update);
         return { statusCode: 200, body: JSON.stringify({ success: true }) };
+      }
+      if (target.url.includes('/clients/get/')) {
+        const email = decodeURIComponent(target.url.split('/clients/get/')[1]);
+        const record = records.find(record => record.email === email);
+        return { statusCode: 200, body: JSON.stringify({ success: true, obj: {
+          client: record, inboundIds: record.inboundIds, usedTraffic: record.traffic.up + record.traffic.down
+        } }) };
       }
       if (target.url.endsWith('/clients/list')) {
         if (mutations) await refresh.promise;
@@ -324,11 +333,12 @@ test('client edits redirect to a GET list, retain context and notices through lo
     assert.equal(destination.searchParams.get('pageSize'), '1');
     const loading = await raw(saved.location);
     assert.equal(loading.status, 200);
-    assert.match(loading.body, /data-clients-loading/);
+    assert.doesNotMatch(loading.body, /data-clients-loading/);
     assert.match(loading.body, /Updated sub-c/);
+    assert.match(loading.body, /class="status inactive"/);
     refresh.resolve(); await tick();
     const completed = await raw(saved.location);
-    assert.match(completed.body, /Updated sub-c/);
+    assert.doesNotMatch(completed.body, /Updated sub-c/);
     assert.match(completed.body, /changed-c/);
     assert.match(completed.body, /class="status inactive"/);
     assert.doesNotMatch(completed.body, /data-clients-loading/);

@@ -8,11 +8,15 @@ export function createSnapshotCache({ load, ttlMs = 20000, maxStaleMs = 120000, 
   let pending;
   let lastError = '';
   let retryAt = 0;
+  let dirty = false;
 
-  function invalidate() {
+  function invalidate({ keepValue = false } = {}) {
     generation += 1;
-    value = undefined;
-    updatedAt = 0;
+    if (!keepValue) {
+      value = undefined;
+      updatedAt = 0;
+    }
+    dirty = keepValue && value !== undefined;
     pending = undefined;
     lastError = '';
     retryAt = 0;
@@ -27,6 +31,7 @@ export function createSnapshotCache({ load, ttlMs = 20000, maxStaleMs = 120000, 
         updatedAt = now();
         lastError = '';
         retryAt = 0;
+        dirty = false;
       }
       return { data, updatedAt: now(), stale: false, refreshError: '' };
     }).catch(error => {
@@ -44,6 +49,16 @@ export function createSnapshotCache({ load, ttlMs = 20000, maxStaleMs = 120000, 
 
   return {
     invalidate,
+    peek(key) {
+      return key === currentKey && now() - updatedAt <= maxStaleMs ? value : undefined;
+    },
+    update(key, updater) {
+      if (key !== currentKey || value === undefined || now() - updatedAt > maxStaleMs) return false;
+      const updated = updater(value);
+      invalidate({ keepValue: true });
+      value = updated;
+      return true;
+    },
     async get(key, { force = false, wait = true } = {}) {
       if (key !== currentKey) {
         invalidate();
@@ -51,8 +66,8 @@ export function createSnapshotCache({ load, ttlMs = 20000, maxStaleMs = 120000, 
       }
       const age = now() - updatedAt;
       if (value !== undefined && !force && age <= maxStaleMs) {
-        if (age >= ttlMs && now() >= retryAt) refresh().catch(() => {});
-        return { data: value, updatedAt, stale: age >= ttlMs, refreshError: lastError };
+        if ((dirty || age >= ttlMs) && now() >= retryAt) refresh().catch(() => {});
+        return { data: value, updatedAt, stale: dirty || age >= ttlMs, refreshError: lastError };
       }
       if (!force && !wait) {
         if (!pending && now() < retryAt) throw new Error(lastError);

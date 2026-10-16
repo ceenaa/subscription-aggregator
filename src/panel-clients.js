@@ -9,6 +9,7 @@ import { runPanelMutationsXrayFirst } from './panel-mutations.js';
 import { aggregateSubscriptions } from './subscription.js';
 import { sourcesForToken } from './source-url.js';
 import { fetchPanelClientSnapshot } from './panel-client-snapshot.js';
+import { fetchPanelEditRecords } from './panel-client-edit.js';
 import {
   deduplicateUsageEntries,
   formatExpiry,
@@ -88,6 +89,7 @@ function panelUsage(entries) {
   const proxies = uniqueStrings(panelEntries.map((entry) => entry.panel.proxy));
 
   return {
+    key: panelGroupKey(firstEntry.panel),
     panel: firstEntry.panel.panelName || firstEntry.panel.name,
     proxy: proxies.join(', '),
     email: displayEmail(panelEntries),
@@ -221,6 +223,32 @@ async function fetchConfiguredPanelStates(runtime, panels, options = {}) {
   );
 }
 
+async function fetchClientEditStates(runtime, panels, subId, targets = []) {
+  const snapshots = new Map();
+  for (const panel of panels) {
+    const key = panelListKey(panel);
+    if (snapshots.has(key)) continue;
+    const attachments = panels.filter(item => panelListKey(item) === key);
+    snapshots.set(key, (async () => {
+      try {
+        const emails = targets.filter(target => target.panelKey === panelGroupKey(panel)).map(target => target.email);
+        const records = await fetchPanelEditRecords(runtime, panel, subId, attachments.map(item => item.inboundId), emails);
+        return attachments.map(attachment => {
+          const matches = records.filter(record => record.inboundIds.includes(String(attachment.inboundId)));
+          // Preserve the legacy indexer's ordering for ambiguous migrated IDs.
+          if (matches.length !== 1) throw Object.assign(new Error('Ambiguous client attachment'), { unsupported: true });
+          const record = matches[0];
+          return { id: attachment.inboundId, settings: { clients: [record.client] }, clientStats: [record.stat] };
+        });
+      } catch (error) {
+        if (!error.unsupported && ![404, 405].includes(error.statusCode)) throw error;
+        return fetchPanelInbounds(runtime, panel);
+      }
+    })());
+  }
+  return Promise.all(panels.map(async panel => panelStateFromInbounds(panel, await snapshots.get(panelListKey(panel)))));
+}
+
 async function loadPanelOnlineState(runtime, panel, timeoutMs) {
   try {
     const onlineClients = await fetchPanelOnlineClients(runtime, panel, { timeoutMs });
@@ -267,6 +295,7 @@ function panelSummaryState(states, onlineState = {}) {
   const proxies = uniqueStrings(states.map((state) => state.panel.proxy));
 
   return {
+    key: panelGroupKey(firstPanel),
     name: firstPanel.panelName || firstPanel.name,
     inboundId: inboundIds[0] || '',
     inboundIds,
@@ -407,6 +436,40 @@ export async function loadCreatedPanelClientSubscriptionUsage(runtime, sources, 
   };
 }
 
+function clientView(subId, entries) {
+  const usageEntries = deduplicateUsageEntries(entries.map(currentUsageEntry), entry => panelGroupKey(entry.panel));
+  const panelRows = groupByPanel(entries, entry => entry.panel).map(group => panelUsage(group.items));
+  return {
+    subId,
+    email: primaryEmail(entries),
+    status: statusForEntries(entries),
+    enabledPanels: panelRows.filter(panel => panel.status === 'Active').length,
+    totalPanels: panelRows.length,
+    usage: normalizeCombinedUsage(usageEntries),
+    usageError: '', sources: [], panels: panelRows,
+    editTargets: entries.map(entry => ({
+      panelKey: panelGroupKey(entry.panel), inboundId: String(entry.panel.inboundId), email: entry.email
+    }))
+  };
+}
+
+export function applyClientUpdateToSnapshot(snapshot, updatedClient) {
+  const old = snapshot.clients.find(client => client.subId === updatedClient.subId);
+  if (!old) return snapshot;
+  const before = new Map(old.panels.map(panel => [panel.key, panel.status === 'Active']));
+  const after = new Map(updatedClient.panels.map(panel => [panel.key, panel.status === 'Active']));
+  return {
+    ...snapshot,
+    clients: snapshot.clients.map(client => client.subId === updatedClient.subId ? updatedClient : client),
+    panels: snapshot.panels.map(panel => {
+      if (!before.has(panel.key) || !after.has(panel.key)) return panel;
+      const delta = Number(after.get(panel.key)) - Number(before.get(panel.key));
+      const activeClients = Math.max(0, Math.min(panel.totalClients, panel.activeClients + delta));
+      return { ...panel, activeClients, inactiveClients: panel.totalClients - activeClients };
+    })
+  };
+}
+
 export async function listCreatedPanelClients(runtime, panels, options = {}) {
   const configuredSources = options.sources || [];
   const concurrency = options.concurrency || 5;
@@ -445,14 +508,7 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
   }
 
   const clients = await mapLimit(groups, concurrency, async ({ subId, entries }) => {
-    const currentEntries = entries.map(currentUsageEntry);
-    const usageEntries = deduplicateUsageEntries(
-      currentEntries,
-      (entry) => panelGroupKey(entry.panel)
-    );
-    let usage = normalizeCombinedUsage(usageEntries);
-    let sources = [];
-    let usageError = '';
+    const client = clientView(subId, entries);
 
     if (configuredSources.length > 0) {
       try {
@@ -462,29 +518,15 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
             configuredSources,
             subId
           );
-          usage = subscription.usage;
-          sources = subscription.sources;
+          client.usage = subscription.usage;
+          client.sources = subscription.sources;
         }
       } catch (error) {
-        usageError = error.message;
+        client.usageError = error.message;
       }
     }
 
-    const panelRows = groupByPanel(entries, (entry) => entry.panel).map((group) =>
-      panelUsage(group.items)
-    );
-
-    return {
-      subId,
-      email: primaryEmail(entries),
-      status: statusForEntries(entries),
-      enabledPanels: panelRows.filter((panel) => panel.status === 'Active').length,
-      totalPanels: panelRows.length,
-      usage,
-      usageError,
-      sources,
-      panels: panelRows
-    };
+    return client;
   });
 
   clients.sort((first, second) => {
@@ -501,7 +543,7 @@ export async function listCreatedPanelClients(runtime, panels, options = {}) {
   };
 }
 
-export async function updateCreatedPanelClient(runtime, panels, input) {
+export async function updateCreatedPanelClient(runtime, panels, input, options = {}) {
   if (!input.subId) throw new Error('subId is required');
 
   const configuredPanels = panels.filter((panel) => panel?.addClientUrl && panel?.inboundId);
@@ -509,7 +551,14 @@ export async function updateCreatedPanelClient(runtime, panels, input) {
     throw new Error('At least one configured panel inbound is required to update clients');
   }
 
-  const panelStates = await fetchConfiguredPanelStates(runtime, configuredPanels);
+  // Validate before doing any network reads; per-panel ratios are applied below.
+  if (!hasUpdates(updateFieldsForEntry({ panel: { totalGbRatio: 1 }, client: {} }, input))) {
+    throw new Error('No edit fields were provided');
+  }
+
+  const panelStates = options.fastRead
+    ? await fetchClientEditStates(runtime, configuredPanels, input.subId, options.targets)
+    : await fetchConfiguredPanelStates(runtime, configuredPanels);
   const entries = panelStates.map((state) => state.clients.get(input.subId));
   const missingPanels = panelStates
     .filter((state, index) => !entries[index])
@@ -562,9 +611,23 @@ export async function updateCreatedPanelClient(runtime, panels, input) {
     }
   );
 
+  const applied = new Map(plannedUpdates.flatMap((planned, index) =>
+    results[index].ok && !results[index].skipped ? [[panelClientMutationKey(planned.entry), planned.updates]] : []
+  ));
+  const confirmedEntries = entries.map(entry => {
+    const updates = applied.get(panelClientMutationKey(entry));
+    if (!updates) return entry;
+    return {
+      ...entry,
+      client: { ...entry.client, ...updates },
+      total: updates.totalGB ?? entry.total,
+      stat: entry.stat ? { ...entry.stat, total: updates.totalGB ?? entry.stat.total } : entry.stat
+    };
+  });
   return {
     subId: input.subId,
     results,
-    ok: results.every((result) => result.ok)
+    ok: results.every((result) => result.ok),
+    client: clientView(input.subId, confirmedEntries)
   };
 }
