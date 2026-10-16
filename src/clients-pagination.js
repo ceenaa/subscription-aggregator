@@ -19,6 +19,7 @@ export function clientsPagination(clients, url, defaultSize = 50) {
     start: matches.length ? (page - 1) * pageSize + 1 : 0,
     end: Math.min(page * pageSize, matches.length),
     previousUrl: page > 1 ? href(page - 1) : '',
-    nextUrl: page < pages ? href(page + 1) : ''
+    nextUrl: page < pages ? href(page + 1) : '',
+    currentUrl: href(page)
   };
 }

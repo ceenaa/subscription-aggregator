@@ -26,10 +26,11 @@ function statusClass(status) {
   return status.toLowerCase();
 }
 
-function editForm(client) {
+function editForm(client, returnTo) {
   return `
     <form class="edit-form" method="post" action="/clients/edit" data-edit-panel hidden>
       <input type="hidden" name="subId" value="${escapeHtml(client.subId)}">
+      <input type="hidden" name="returnTo" value="${escapeHtml(returnTo || '/clients')}">
       <div class="edit-heading">
         <div>
           <strong>Edit configuration</strong>
@@ -74,7 +75,7 @@ function editForm(client) {
   `;
 }
 
-function quickExpiryForm(client) {
+function quickExpiryForm(client, returnTo) {
   const clientLabel = client.email || client.subId;
 
   return `
@@ -85,6 +86,7 @@ function quickExpiryForm(client) {
       data-confirm-action="Set ${escapeHtml(clientLabel)} expiry to 30 days from now?"
     >
       <input type="hidden" name="subId" value="${escapeHtml(client.subId)}">
+      <input type="hidden" name="returnTo" value="${escapeHtml(returnTo || '/clients')}">
       <input type="hidden" name="expiryAfterDays" value="30">
       <button
         type="submit"
@@ -182,7 +184,7 @@ function sourceRows(client) {
   `;
 }
 
-function clientRows(clients) {
+function clientRows(clients, returnTo) {
   if (clients.length === 0) {
     return `
       <tr>
@@ -220,14 +222,14 @@ function clientRows(clients) {
             <div class="client-actions">
               <a href="${escapeHtml(client.subscriptionUrl)}">Open</a>
               <button type="button" data-copy-text="${escapeHtml(client.subscriptionUrl)}">Copy</button>
-              ${quickExpiryForm(client)}
+              ${quickExpiryForm(client, returnTo)}
               <button type="button" data-edit-toggle>Edit</button>
             </div>
           </td>
         </tr>
         <tr class="panel-row" data-panel-row>
           <td colspan="7">
-            ${editForm(client)}
+            ${editForm(client, returnTo)}
             <details data-client-details>
               <summary>${client.enabledPanels}/${client.totalPanels} panels active</summary>
               ${client.usageError ? `<p class="usage-error">${escapeHtml(client.usageError)}</p>` : ''}
@@ -1151,7 +1153,7 @@ export function renderClientsPage({
           </tr>
         </thead>
         <tbody>
-          ${loading ? '<tr><td colspan="7" class="empty" data-clients-loading>Loading clients…</td></tr>' : clientRows(pagination?.items || clients)}
+          ${loading ? '<tr><td colspan="7" class="empty" data-clients-loading>Loading clients…</td></tr>' : clientRows(pagination?.items || clients, pagination?.currentUrl)}
         </tbody>
       </table>
     </div>

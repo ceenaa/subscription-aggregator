@@ -270,3 +270,86 @@ test('cold clients page responds immediately, then searches and paginates the au
     assert.equal(clientReads, 2);
   } finally { blocked.resolve(); await app.close(); }
 });
+
+test('client edits redirect to a GET list, retain context and notices through loading, and never resubmit on reload', async () => {
+  const { createServer } = await import('../src/server.js');
+  const refresh = deferred();
+  let mutations = 0;
+  let failMutation = false;
+  const records = ['a', 'b', 'c'].map(suffix => ({
+    id: `uuid-${suffix}`, email: `changed-${suffix}`, subId: `sub-${suffix}`,
+    enable: true, totalGB: 1000, inboundIds: [4], traffic: { up: 10, down: 20, total: 1000 }
+  }));
+  const runtime = {
+    async request(target, options) {
+      let obj;
+      if (target.url.includes('/clients/update/')) {
+        mutations++;
+        if (failMutation) return { statusCode: 200, body: JSON.stringify({ success: false, msg: 'panel rejected update' }) };
+        const update = JSON.parse(options.body);
+        Object.assign(records.find(record => record.email === update.email), update);
+        return { statusCode: 200, body: JSON.stringify({ success: true }) };
+      }
+      if (target.url.endsWith('/clients/list')) {
+        if (mutations) await refresh.promise;
+        obj = records;
+      } else if (target.url.endsWith('/inbounds/list')) {
+        obj = [{ id: 4, settings: { clients: records }, clientStats: records.map(record => ({ ...record.traffic, subId: record.subId })) }];
+      } else obj = target.url.endsWith('/options') ? [{ id: 4 }] : [];
+      return { statusCode: 200, body: JSON.stringify({ success: true, obj }) };
+    },
+    async close() {}
+  };
+  const app = await createServer({ panels: [panel('4')], sources: [], worker: { concurrency: 5 }, https: { enabled: false }, clients: { pageSize: 1 } }, { runtime });
+  const port = await listen(app.server);
+  const raw = (url, body) => new Promise((resolve, reject) => {
+    const request = http.request(`http://127.0.0.1:${port}${url}`, { method: body ? 'POST' : 'GET', headers: body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {} }, response => {
+      let text = ''; response.on('data', chunk => text += chunk);
+      response.on('end', () => resolve({ status: response.statusCode, location: response.headers.location, body: text }));
+    });
+    request.on('error', reject); request.end(body);
+  });
+  try {
+    await raw('/clients?refresh=1');
+    const recovered = await raw('/clients/edit?page=3&pageSize=1');
+    assert.equal(recovered.status, 303);
+    assert.equal(recovered.location, '/clients?page=3&pageSize=1');
+    assert.equal(mutations, 0);
+    const saved = await raw('/clients/edit', new URLSearchParams({ subId: 'sub-c', status: 'disable', returnTo: '/clients?q=changed&page=3&pageSize=1' }).toString());
+    assert.equal(saved.status, 303);
+    const destination = new URL(saved.location, 'http://localhost');
+    assert.equal(destination.pathname, '/clients');
+    assert.equal(destination.searchParams.get('q'), 'changed');
+    assert.equal(destination.searchParams.get('page'), '3');
+    assert.equal(destination.searchParams.get('pageSize'), '1');
+    const loading = await raw(saved.location);
+    assert.equal(loading.status, 200);
+    assert.match(loading.body, /data-clients-loading/);
+    assert.match(loading.body, /Updated sub-c/);
+    refresh.resolve(); await tick();
+    const completed = await raw(saved.location);
+    assert.match(completed.body, /Updated sub-c/);
+    assert.match(completed.body, /changed-c/);
+    assert.match(completed.body, /class="status inactive"/);
+    assert.doesNotMatch(completed.body, /data-clients-loading/);
+    assert.match(completed.body, /name="returnTo" value="\/clients\?page=3&amp;pageSize=1&amp;q=changed"/);
+    const reloaded = await raw(saved.location);
+    assert.equal(reloaded.status, 200);
+    assert.equal(mutations, 1);
+    assert.doesNotMatch(reloaded.body, /Updated sub-c/);
+
+    const invalid = await raw('/clients/edit', new URLSearchParams({ subId: 'sub-c', returnTo: 'https://attacker.example/' }).toString());
+    assert.equal(invalid.status, 303);
+    assert.ok(invalid.location.startsWith('/clients?notice='));
+    const validation = await raw(invalid.location);
+    assert.match(validation.body, /No edit fields were provided/);
+    assert.equal(mutations, 1);
+
+    failMutation = true;
+    const failed = await raw('/clients/edit', 'subId=sub-c&status=enable');
+    const failedPage = await raw(failed.location);
+    assert.match(failedPage.body, /Some panel updates failed for sub-c/);
+    assert.match(failedPage.body, /panel rejected update/);
+    assert.doesNotMatch(failedPage.body, /Updated sub-c/);
+  } finally { refresh.resolve(); await app.close(); }
+});

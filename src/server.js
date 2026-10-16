@@ -3,6 +3,7 @@ import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { loadDotEnv } from './env.js';
 import { loadConfig, refreshConfiguredTargets } from './config.js';
 import {
@@ -175,6 +176,20 @@ function clientEditValuesFromBody(body) {
   };
 }
 
+function clientsReturnUrl(value) {
+  const base = 'http://localhost';
+  try {
+    const url = new URL(value || '/clients', base);
+    if (url.origin !== base || url.pathname !== '/clients') return new URL('/clients', base);
+    for (const key of [...url.searchParams.keys()]) {
+      if (!['q', 'page', 'pageSize', 'usage'].includes(key)) url.searchParams.delete(key);
+    }
+    return url;
+  } catch {
+    return new URL('/clients', base);
+  }
+}
+
 function panelValuesFromBody(body) {
   const params = new URLSearchParams(body);
   return {
@@ -324,6 +339,16 @@ async function createNodeServer(config, handler) {
 export async function createServer(config = loadConfig(), dependencies = {}) {
   let runtime;
   let lastClientsAccess = Date.now();
+  const editNotices = new Map();
+  function rememberEditNotice(notice) {
+    for (const [key, value] of editNotices) {
+      if (value.expiresAt <= Date.now()) editNotices.delete(key);
+    }
+    if (editNotices.size >= 100) editNotices.delete(editNotices.keys().next().value);
+    const key = randomUUID();
+    editNotices.set(key, { ...notice, expiresAt: Date.now() + 120000 });
+    return key;
+  }
   const snapshotCache = createSnapshotCache({
     load: () => listCreatedPanelClients(runtime, config.panels, {
       includeSubscriptionUsage: false, clientApi: true, onlineTimeoutMs: 2000
@@ -537,6 +562,11 @@ export async function createServer(config = loadConfig(), dependencies = {}) {
         }
 
         const isClientEdit = url.pathname === '/clients/edit';
+        if (isClientEdit && (request.method === 'GET' || request.method === 'HEAD')) {
+          const destination = clientsReturnUrl(`/clients${url.search}`);
+          sendRedirect(config, request, response, `${destination.pathname}${destination.search}`);
+          return;
+        }
         if (
           (isClientEdit && request.method !== 'POST') ||
           (!isClientEdit && request.method !== 'GET' && request.method !== 'HEAD')
@@ -561,35 +591,27 @@ export async function createServer(config = loadConfig(), dependencies = {}) {
           return;
         }
 
-        let updateResult = null;
         if (isClientEdit) {
           snapshotCache.invalidate();
+          let returnTo = clientsReturnUrl();
+          let notice;
           try {
-            const values = clientEditValuesFromBody(await readRequestBody(request));
-            updateResult = await updateCreatedPanelClient(runtime, config.panels, values);
-            snapshotCache.invalidate();
+            const body = await readRequestBody(request);
+            returnTo = clientsReturnUrl(new URLSearchParams(body).get('returnTo'));
+            const values = clientEditValuesFromBody(body);
+            const updateResult = await updateCreatedPanelClient(runtime, config.panels, values);
+            notice = {
+              message: updateResult.ok ? `Updated ${updateResult.subId}` : `Some panel updates failed for ${updateResult.subId}`,
+              updateResults: updateResult.results
+            };
           } catch (error) {
+            notice = { error: error.message };
+          } finally {
             snapshotCache.invalidate();
-            let view = { panels: config.panels, clients: [] };
-            try {
-              view = await loadClientsView(config, runtime, request);
-            } catch {
-              // Keep the original edit error visible even if reloading the table also fails.
-            }
-
-            sendHtml(
-              config,
-              request,
-              response,
-              400,
-              renderClientsPage({
-                ...view,
-                error: error.message,
-                updatedAt: new Date()
-              })
-            );
-            return;
           }
+          returnTo.searchParams.set('notice', rememberEditNotice(notice));
+          sendRedirect(config, request, response, `${returnTo.pathname}${returnTo.search}`);
+          return;
         }
 
         let result;
@@ -616,6 +638,10 @@ export async function createServer(config = loadConfig(), dependencies = {}) {
           return;
         }
 
+        const noticeKey = url.searchParams.get('notice');
+        const savedNotice = editNotices.get(noticeKey);
+        const notice = savedNotice?.expiresAt > Date.now() ? savedNotice : {};
+        if (!result.loading && request.method === 'GET') editNotices.delete(noticeKey);
         sendHtml(
           config,
           request,
@@ -626,8 +652,7 @@ export async function createServer(config = loadConfig(), dependencies = {}) {
             panels: result.panels,
             clients: result.clients,
             pagination: clientsPagination(result.clients, url, config.clients?.pageSize),
-            message: updateResult ? `Updated ${updateResult.subId}` : '',
-            updateResults: updateResult?.results || []
+            ...notice
           })
         );
         return;

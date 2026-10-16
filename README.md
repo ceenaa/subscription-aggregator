@@ -246,6 +246,8 @@ The server keeps a shared snapshot, preloads it on startup, and refreshes it in 
 
 Only 50 clients are rendered per page. Search covers the complete matched set, and page/search navigation updates the table without reloading the document. Use `?page=2&pageSize=100` to change pages or request up to 100 rows. Configure defaults with `CLIENTS_PAGE_SIZE=50`, `CLIENTS_CACHE_TTL_MS=20000`, and `CLIENTS_MAX_STALE_MS=120000`.
 
+Saving an edit or quick expiry redirects back to the clients list, preserving the current search and page. Save results and panel failures remain visible while the refreshed snapshot loads. Reloading the result page does not submit the edit again.
+
 Upstream requests negotiate gzip/Brotli/deflate, decode compressed bodies, and reuse direct and HTTPS proxy connections. One hard deadline covers connection setup, redirects, and response transfer. HTML, JSON, and JavaScript responses use gzip when accepted while retaining the existing no-store policy for authenticated data.
 
 The summary shows per-panel online, active/total, and inactive/total counts. Online lookups have a two-second request budget so they cannot hold a complete snapshot for a full panel timeout. Use `/clients?usage=subscription` only when you need to wait for upstream `Subscription-Userinfo` headers for every client; expanding details still loads those authoritative subscription headers for the selected client. The edit form can enable/disable a client, add base traffic using each panel's ratio, set expiry, or clear expiry while preserving other fields.
