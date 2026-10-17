@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { createSubscriptionFetcher } from './runtime.js';
 import { deduplicateUsageEntries, normalizeCombinedUsage, normalizeQuotaUsage } from './usage.js';
 import { runPanelMutationsXrayFirst } from './panel-mutations.js';
+import { clientWriteFields } from './client-write-fields.js';
 
 function requirePanelField(panel, field) {
   if (!panel[field]) {
@@ -220,7 +221,7 @@ export function buildUpdateClientRequest(panel, inbound, client, stat = null, up
   const url = panelClientsUrl(panel, `update/${encodeURIComponent(email)}`);
   // Provide defaults for fields absent in settings.clients of old-API-created clients,
   // so the panel doesn't reset them to zero values on update.
-  const merged = { password: '', auth: '', security: 'auto', group: '', ...client, ...updates };
+  const merged = clientWriteFields({ password: '', auth: '', security: 'auto', group: '', ...client, ...updates });
   // Old panels stored tgId as a string; v3 API requires int64.
   merged.tgId = Number(merged.tgId) || 0;
   // Omit subId: panels migrated from old-API may have two clients sharing the same subId

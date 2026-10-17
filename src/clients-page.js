@@ -325,7 +325,7 @@ function updateResultList(results) {
           (result) => `
             <li class="${result.ok ? 'ok' : 'fail'}">
               <strong>${escapeHtml(result.panel)}</strong>
-              <span>${escapeHtml(result.skipped ? 'No changes' : result.response || result.error || '')}</span>
+              <span>${escapeHtml(result.response || result.error || (result.skipped ? 'Skipped' : ''))}</span>
             </li>
           `
         )

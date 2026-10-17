@@ -22,6 +22,7 @@ async function runWithRetry(panel, operation, retryCount, defaultRetryCount) {
     try {
       return await operation();
     } catch (error) {
+      if (error.retryable === false) throw error;
       lastError = error;
     }
   }

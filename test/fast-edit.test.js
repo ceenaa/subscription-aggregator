@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { updateCreatedPanelClient, listCreatedPanelClients, applyClientUpdateToSnapshot } from '../src/panel-clients.js';
 import { createSnapshotCache } from '../src/snapshot-cache.js';
+import { clientWriteFields } from '../src/client-write-fields.js';
+import { renderClientsPage } from '../src/clients-page.js';
 
 const gib = 1024 ** 3;
 const panel = (name, id, inboundId, proxy = 'direct') => ({ name, panelName: name, panelDbId: id, inboundId, proxy, apiKey: 'test-key', addClientUrl: `https://${name}.example/panel/api/clients/add`, totalGbRatio: id, quotaDivisor: 1 });
@@ -10,7 +12,7 @@ const record = (email, uuid, totalGB = 10 * gib) => ({
   password: 'keep-password', auth: 'keep-auth', security: 'auto', flow: 'xtls-rprx-vision',
   reverse: { tag: 'keep-reverse' }, tgId: 17, group: 'keep-group', comment: 'keep-comment',
   expiryTime: 777, limitIp: 3, reset: 4, resetDay: 9, limitHwid: 2,
-  privateKey: 'keep-private-key', publicKey: 'keep-public-key', forwardedPorts: [9000],
+  privateKey: 'keep-private-key', publicKey: 'keep-public-key', allowedIPs: '', forwardedPorts: '',
   createdAt: 12345, updatedAt: 67890
 });
 const response = obj => ({ statusCode: 200, body: JSON.stringify({ success: true, obj }) });
@@ -56,11 +58,13 @@ test('fast edits fetch only complete target records, preserve credentials and pr
     assert.equal(typeof body.id, 'string');
     assert.equal(body.created_at, original.createdAt);
     assert.equal(body.updated_at, original.updatedAt);
-    for (const key of ['password', 'auth', 'privateKey', 'publicKey', 'forwardedPorts', 'flow', 'security', 'reverse', 'tgId', 'group', 'comment', 'expiryTime', 'limitIp', 'reset', 'resetDay', 'limitHwid']) assert.deepEqual(body[key], original[key], key);
+    for (const key of ['password', 'auth', 'privateKey', 'publicKey', 'flow', 'security', 'reverse', 'tgId', 'group', 'comment', 'expiryTime', 'limitIp', 'reset', 'resetDay', 'limitHwid']) assert.deepEqual(body[key], original[key], key);
     assert.equal(body.totalGB, original.totalGB + (index ? gib : 2 * gib));
     assert.equal(body.enable, false);
     assert.equal(body.subId, undefined);
     assert.equal(body.uuid, undefined);
+    assert.deepEqual(body.allowedIPs, []);
+    assert.equal(body.forwardedPorts, undefined);
   }
   assert.equal(result.client.status, 'Inactive');
   assert.equal(result.client.usage.total, 12 * gib);
@@ -168,4 +172,54 @@ test('patched snapshots stay available and an older refresh cannot erase a confi
   assert.equal(cache.update('different-config', () => null), false);
   time += 120001;
   assert.equal(cache.peek('config'), undefined);
+});
+
+
+test('database JSON protocol fields become typed arrays without changing their values', () => {
+  const input = {
+    allowedIPs: '["10.0.0.2/32","::1/128"]',
+    forwardedPorts: '[{"port":9000,"targetPort":9001}]',
+    password: 'preserve-secret'
+  };
+  const normalized = clientWriteFields(input);
+  assert.deepEqual(normalized.allowedIPs, ['10.0.0.2/32', '::1/128']);
+  assert.deepEqual(normalized.forwardedPorts, [{ port: 9000, targetPort: 9001 }]);
+  assert.equal(normalized.password, input.password);
+  assert.equal(typeof input.allowedIPs, 'string');
+  assert.deepEqual(clientWriteFields({ allowedIPs: '', forwardedPorts: '' }), { allowedIPs: [] });
+  assert.deepEqual(clientWriteFields({ allowedIPs: null, forwardedPorts: null }), { allowedIPs: null, forwardedPorts: null });
+  assert.deepEqual(clientWriteFields({ allowedIPs: ['10.0.0.2/32'], forwardedPorts: [9000] }), { allowedIPs: ['10.0.0.2/32'], forwardedPorts: [9000] });
+  for (const allowedIPs of ['not json', '"a string"', '{}', '[123]']) {
+    assert.throws(() => clientWriteFields({ allowedIPs }), error => error.retryable === false);
+  }
+});
+
+test('malformed protocol fields on any panel reject the whole plan before the first mutation', async () => {
+  const f = fixture();
+  f.clients.get('reverse').allowedIPs = 'invalid stored IP JSON';
+  await assert.rejects(updateCreatedPanelClient(f.runtime, f.panels, { subId: 'shared-sub', status: 'disable' }, { fastRead: true, targets: f.targets }), /allowedIPs must contain a JSON array/);
+  assert.equal(f.requests.filter(request => request.method === 'POST').length, 0);
+});
+
+test('deterministic Go schema errors are not retried and skipped panels show the actual reason', async () => {
+  const f = fixture();
+  const original = f.runtime.request;
+  let writes = 0;
+  f.runtime.request = async (target, options) => {
+    if (options.method === 'POST' && target.name === 'aws') {
+      writes++;
+      return { statusCode: 200, body: JSON.stringify({ success: false, msg: 'Something went wrong (json: cannot unmarshal string into Go struct field .allowedIPs of type []string)' }) };
+    }
+    return original(target, options);
+  };
+  const result = await updateCreatedPanelClient(f.runtime, f.panels, { subId: 'shared-sub', status: 'disable' }, { fastRead: true, targets: f.targets });
+  assert.equal(writes, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.results[1].skipped, true);
+  assert.match(result.results[1].error, /skipped after Xray failure/);
+  assert.doesNotMatch(result.results[0].error, /after 4 attempts/);
+  assert.equal(f.requests.filter(request => request.method === 'POST' && request.name === 'reverse').length, 0);
+  const html = renderClientsPage({ message: 'Some panel updates failed', updateResults: result.results });
+  assert.match(html, /skipped after Xray failure/);
+  assert.doesNotMatch(html, /<span>No changes<\/span>/);
 });

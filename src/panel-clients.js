@@ -394,17 +394,20 @@ function parsePanelPayload(body, panelName) {
   try {
     const parsed = JSON.parse(body);
     if (parsed?.success === false) {
-      throw new Error(parsed.msg || 'unknown panel error');
+      const error = new Error(parsed.msg || 'unknown panel error');
+      if (/json:\s*cannot unmarshal/i.test(error.message)) error.retryable = false;
+      throw error;
     }
 
     return parsed;
   } catch (error) {
-    throw new Error(`${panelName} update failed: ${error.message}`);
+    const wrapped = new Error(`${panelName} update failed: ${error.message}`);
+    if (error.retryable === false) wrapped.retryable = false;
+    throw wrapped;
   }
 }
 
-async function updatePanelClient(runtime, entry, updates) {
-  const request = buildUpdateClientRequest(entry.panel, entry.inbound, entry.client, entry.stat, updates);
+async function updatePanelClient(runtime, entry, updates, request) {
   const response = await runtime.request(
     {
       name: entry.panel.name,
@@ -568,10 +571,13 @@ export async function updateCreatedPanelClient(runtime, panels, input, options =
     throw new Error(`Client ${input.subId} is missing from ${missingPanels.join(', ')}`);
   }
 
-  const plannedUpdates = deduplicatePanelClientMutationEntries(entries).map((entry) => ({
-    entry,
-    updates: updateFieldsForEntry(entry, input)
-  }));
+  const plannedUpdates = deduplicatePanelClientMutationEntries(entries).map(entry => {
+    const updates = updateFieldsForEntry(entry, input);
+    return {
+      entry, updates,
+      request: hasUpdates(updates) ? buildUpdateClientRequest(entry.panel, entry.inbound, entry.client, entry.stat, updates) : null
+    };
+  });
 
   if (plannedUpdates.every((item) => !hasUpdates(item.updates))) {
     throw new Error('No edit fields were provided');
@@ -579,7 +585,7 @@ export async function updateCreatedPanelClient(runtime, panels, input, options =
 
   const results = await runPanelMutationsXrayFirst(
     plannedUpdates,
-    async ({ entry, updates }) => {
+    async ({ entry, updates, request }) => {
       if (!hasUpdates(updates)) {
         return {
           panel: entry.panel.name,
@@ -589,7 +595,7 @@ export async function updateCreatedPanelClient(runtime, panels, input, options =
         };
       }
 
-      const result = await updatePanelClient(runtime, entry, updates);
+      const result = await updatePanelClient(runtime, entry, updates, request);
       if (!result.ok) throw new Error(result.response || 'panel update failed');
       return result;
     },
