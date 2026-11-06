@@ -123,7 +123,7 @@ FIRST_SUBSCRIPTION_PROXY=direct npm run print:plain -- YOUR_TOKEN
 
 `REQUEST_TIMEOUT_MS` is applied as a hard deadline to panel and subscription HTTP requests, including direct and Xray-proxied requests.
 
-`FIRST_SUBSCRIPTION_*`, `SECOND_SUBSCRIPTION_*`, and `THIRD_SUBSCRIPTION_*` are still accepted as fallback subscription sources for older installs. SQLite subscription sources are listed first, and env sources whose `baseUrl` and route are not already configured in SQLite are appended. New sources should be added on each inbound in `/settings`.
+`FIRST_SUBSCRIPTION_*`, `SECOND_SUBSCRIPTION_*`, and `THIRD_SUBSCRIPTION_*` are still accepted as fallback subscription sources for older installs. SQLite subscription sources are listed first. An env source is appended only when its base URL is not managed by any inbound in SQLite, including disabled inbounds and inbounds on disabled panels. New sources should be added on each inbound in `/settings`.
 
 If an existing `.env` contains `FIRST_PANEL_*`, `SECOND_PANEL_*`, or `THIRD_PANEL_*`, the first startup creates the SQLite database and migrates those panel/inbound records once. Use `FIRST_PANEL_API_KEY`, `SECOND_PANEL_API_KEY`, or `THIRD_PANEL_API_KEY` for their 3x-ui API keys. After that, edit them in `/settings`.
 

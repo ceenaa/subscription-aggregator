@@ -57,11 +57,13 @@ function sourceKey(source) {
   return `${source.baseUrl || ''}\u0000${source.proxy || ''}`;
 }
 
-function mergeSources(databaseSources, envSources) {
+function mergeSources(databaseSources, envSources, managedSourceUrls = []) {
   const merged = [...databaseSources];
   const seen = new Set(databaseSources.map(sourceKey));
+  const managedUrls = new Set(managedSourceUrls.map((url) => url.replace(/\/+$/, '')));
 
   for (const source of envSources) {
+    if (managedUrls.has(source.baseUrl.replace(/\/+$/, ''))) continue;
     const key = sourceKey(source);
     if (seen.has(key)) continue;
 
@@ -124,7 +126,7 @@ export function loadConfig(env = process.env, options = {}) {
       path: databasePath
     },
     envSources,
-    sources: mergeSources(databaseConfig.sources, envSources),
+    sources: mergeSources(databaseConfig.sources, envSources, databaseConfig.managedSourceUrls),
     panels: databaseConfig.panels
   };
 }
@@ -138,6 +140,6 @@ export function refreshConfiguredTargets(config, env = process.env) {
   });
 
   config.panels = databaseConfig.panels;
-  config.sources = mergeSources(databaseConfig.sources, config.envSources || []);
+  config.sources = mergeSources(databaseConfig.sources, config.envSources || [], databaseConfig.managedSourceUrls);
   return config;
 }

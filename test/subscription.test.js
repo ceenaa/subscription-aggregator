@@ -2891,6 +2891,27 @@ test('loads N panels and M inbounds from sqlite configuration', () => {
   assert.deepEqual(config.sources.map((source) => source.name), ['edge 443', 'core 443']);
 });
 
+test('disabled SQLite inbounds suppress matching legacy sources after refresh and restart', () => {
+  const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
+  const panelId = createPanel(databasePath, {
+    name: 'aws', addClientUrl: 'https://panel.example/api/inbounds/addClient',
+    apiKey: 'key', proxy: 'direct', enabled: true
+  });
+  const inbound = {
+    panelId, name: 'cloudflare', inboundId: '6', subscriptionName: 'cloudflare',
+    subscriptionBaseUrl: 'https://first-provider.example/sub/', subscriptionProxy: 'direct', enabled: true
+  };
+  const inboundId = createInbound(databasePath, inbound);
+  const env = baseEnv({ SQLITE_DB_PATH: databasePath, FIRST_SUBSCRIPTION_PROXY: 'xray' });
+  const config = loadConfig(env);
+  assert.deepEqual(config.sources.map(source => source.baseUrl), [inbound.subscriptionBaseUrl, 'https://second-provider.example/sub']);
+
+  updateInbound(databasePath, inboundId, { ...inbound, enabled: false });
+  refreshConfiguredTargets(config, env);
+  assert.deepEqual(config.sources.map(source => source.baseUrl), ['https://second-provider.example/sub']);
+  assert.deepEqual(loadConfig(env).sources.map(source => source.baseUrl), ['https://second-provider.example/sub']);
+});
+
 test('adds API key storage to an existing cookie-era sqlite database', () => {
   const databasePath = path.join(mkdtempSync(path.join(tmpdir(), 'subscription-aggregator-')), 'config.sqlite3');
   const { DatabaseSync } = require('node:sqlite');

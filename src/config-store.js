@@ -381,7 +381,11 @@ export function loadDatabaseConfiguration({ databasePath, legacyEnv = process.en
     seedLegacyConfiguration(db, legacyEnv);
     return {
       panels: listConfiguredPanelInbounds(db),
-      sources: listConfiguredSubscriptionSources(db)
+      sources: listConfiguredSubscriptionSources(db),
+      managedSourceUrls: db.prepare(`
+        SELECT DISTINCT subscription_base_url AS baseUrl
+        FROM inbounds WHERE subscription_base_url != ''
+      `).all().map((row) => row.baseUrl)
     };
   });
 }
