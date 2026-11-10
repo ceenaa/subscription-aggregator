@@ -101,6 +101,8 @@ probe_route() {
 set_route() {
   local candidate="$1"
   CANDIDATE="$candidate" ENV_PATH="$ENV_FILE" node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const path=process.env.ENV_PATH; const before=readFileSync(path,"utf8"); const after=before.replace(/^XRAY_OUTBOUND_LINK=.*$/m, `XRAY_OUTBOUND_LINK="${process.env.CANDIDATE}"`); if (after === before) throw new Error("XRAY_OUTBOUND_LINK is missing"); writeFileSync(path, after);'
+  # The health probe reads the current shell environment, not the rewritten file.
+  export XRAY_OUTBOUND_LINK="$candidate"
 }
 
 backup_env="$STATE_DIR/.env.before-failover"
